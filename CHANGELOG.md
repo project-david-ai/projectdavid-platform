@@ -1,3 +1,10 @@
+## [1.8.2](https://github.com/project-david-ai/platform-docker/compare/v1.8.1...v1.8.2) (2026-03-14)
+
+
+### Bug Fixes
+
+* update README and compose file paths for consistency ([1f4dc26](https://github.com/project-david-ai/platform-docker/commit/1f4dc26cd10df81237a82bf5b907ffa364912683))
+
 ## [1.8.1](https://github.com/project-david-ai/platform-docker/compare/v1.8.0...v1.8.1) (2026-03-14)
 
 
