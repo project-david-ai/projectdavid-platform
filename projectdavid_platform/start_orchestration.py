@@ -451,12 +451,24 @@ class Orchestrator:
 
     def _compose_files(self) -> List[str]:
         """
-        Build the -f / --env-file fragment inserted before every docker compose
-        sub-command.  --env-file is given as an absolute CWD path so that
-        Docker Compose finds the project .env even when the bundled compose
-        file lives inside site-packages.
+        Build the flag fragment inserted before every docker compose sub-command.
+
+        --project-directory anchors ALL relative path resolution (env_file:,
+        volume mounts, build contexts) to the user's CWD, regardless of where
+        the bundled compose file physically lives (e.g. inside site-packages
+        after a pip install).
+
+        --env-file supplies the absolute path to the CWD .env for variable
+        substitution, as a belt-and-suspenders complement to --project-directory.
         """
-        files = ["--env-file", self._env_file_abs, "-f", self.base_compose]
+        files = [
+            "--project-directory",
+            str(Path.cwd()),
+            "--env-file",
+            self._env_file_abs,
+            "-f",
+            self.base_compose,
+        ]
         if getattr(self.args, "gpu", False):
             files += ["-f", self.gpu_compose]
         return files
@@ -913,6 +925,8 @@ class Orchestrator:
         cmd = [
             "docker",
             "compose",
+            "--project-directory",
+            str(Path.cwd()),
             "--env-file",
             self._env_file_abs,
             "-f",
@@ -942,6 +956,8 @@ class Orchestrator:
         cmd = [
             "docker",
             "compose",
+            "--project-directory",
+            str(Path.cwd()),
             "--env-file",
             self._env_file_abs,
             "-f",
@@ -968,6 +984,8 @@ class Orchestrator:
         cmd = [
             "docker",
             "compose",
+            "--project-directory",
+            str(Path.cwd()),
             "--env-file",
             self._env_file_abs,
             "-f",
