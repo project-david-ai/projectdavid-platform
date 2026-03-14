@@ -1,3 +1,10 @@
+# [1.7.0](https://github.com/project-david-ai/platform-docker/compare/v1.6.0...v1.7.0) (2026-03-14)
+
+
+### Features
+
+* initial release of projectdavid-platform with pdavid CLI ([f93df3f](https://github.com/project-david-ai/platform-docker/commit/f93df3f18b6425e0863cf946b9d2086337548cb3))
+
 # [1.6.0](https://github.com/project-david-ai/platform-docker/compare/v1.5.0...v1.6.0) (2026-03-14)
 
 
