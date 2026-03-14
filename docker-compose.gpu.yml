@@ -1,0 +1,75 @@
+# docker-compose.gpu.yml
+#
+# GPU service overrides — opt-in extension for users with NVIDIA hardware.
+#
+# USAGE:
+#   entities-dev --mode up --gpu
+#
+# Or manually:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# REQUIREMENTS:
+#   - NVIDIA GPU with drivers installed
+#   - NVIDIA Container Toolkit (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+#   - HF_TOKEN set in .env (for gated model downloads)
+#   - HF_CACHE_PATH set in .env (auto-resolved by entities-dev on first run)
+#
+# To set HF_TOKEN after initial setup:
+#   entities-dev configure --set HF_TOKEN=hf_abc123
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - my_custom_network
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: vllm_server
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      # HF_TOKEN is optional — stack starts without it but gated model
+      # downloads will fail. Set via: entities-dev configure --set HF_TOKEN=hf_abc123
+      - HF_TOKEN=${HF_TOKEN}
+    volumes:
+      - ${HF_CACHE_PATH:?HF_CACHE_PATH is not set. Run: entities-dev --mode up}:/root/.cache/huggingface
+    ports:
+      - "8001:8000"
+    command: >
+      --model ${VLLM_MODEL:?VLLM_MODEL is not set. Run: entities-dev --mode up}
+      --dtype float16
+      --quantization fp8
+      --max-model-len 4096
+      --gpu-memory-utilization 0.85
+    networks:
+      - my_custom_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Override api service to point at the real GPU service URLs
+  # instead of the localhost stubs in the base compose file.
+  api:
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434/v1
+      - VLLM_BASE_URL=http://vllm_server:8000
+    depends_on:
+      ollama:
+        condition: service_started
+      vllm:
+        condition: service_started
+
+volumes:
+  ollama_data:

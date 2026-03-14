@@ -16,7 +16,7 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "python scripts/version_control.py ${nextRelease.version} pyproject.toml"
+        "prepareCmd": "python scripts/update_pyproject_versions.py ${nextRelease.version} pyproject.toml"
       }
     ],
     "@semantic-release/github",

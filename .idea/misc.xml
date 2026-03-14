@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="entities" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="entities" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="entities_api" project-jdk-type="Python SDK" />
 </project>

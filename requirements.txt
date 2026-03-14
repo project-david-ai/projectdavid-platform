@@ -1,6 +1,3 @@
 PyYAML>=5.4
-black
-isort
-dotenv
-sqlalchemy
-projectdavid
+python-dotenv>=1.0
+typer>=0.9.0

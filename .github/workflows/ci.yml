@@ -2,20 +2,16 @@ name: Lint & Version Orchestration Layer
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
   pull_request:
-    branches:
-      - main
-      - master
+    branches: [main, master]
 
 permissions:
   contents: write
 
 jobs:
   lint:
-    name: 🧹 Lint Orchestration Scripts & Dockerfiles
+    name: 🧹 Lint Orchestration Scripts & Compose Files
     runs-on: ubuntu-latest
     steps:
       - name: 🧾 Checkout repository
@@ -34,12 +30,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-lint-
 
-      - name: 🔧 Install tools
+      - name: 🔧 Install tools and project dependencies
         run: |
           pip install --upgrade pip
+          pip install -r requirements.txt
           pip install ruff==0.4.0 black
-          sudo wget -O /usr/local/bin/hadolint https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64
-          sudo chmod +x /usr/local/bin/hadolint
 
       - name: ✨ Run Ruff Linter
         run: ruff check . --output-format=github
@@ -47,10 +42,10 @@ jobs:
       - name: ⚫️ Run Black Formatter Check
         run: black --check .
 
-      - name: 🐳 Lint Dockerfiles
+      - name: 🐳 Validate Compose Files
         run: |
-          hadolint docker/api/Dockerfile || true
-          hadolint docker/sandbox/Dockerfile || true
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.gpu.yml config --quiet
 
   release:
     name: 🚀 Git Version & Changelog
