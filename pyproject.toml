@@ -3,16 +3,16 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "entities_orchestration"
+name = "projectdavid-platform"
 version = "1.3.0"
-description = "Deployment orchestrator for the Entities platform"
+description = "Deployment orchestrator for the Project David / Entities platform"
 readme = "README.md"
 authors = [
   { name = "Francis Neequaye Armah", email = "francis.neequaye@projectdavid.co.uk" }
 ]
 license = { text = "PolyForm Noncommercial 1.0.0" }
 requires-python = ">=3.9"
-keywords = ["Entities", "Orchestration", "Docker", "Deployment", "LLM"]
+keywords = ["Entities", "ProjectDavid", "Orchestration", "Docker", "Deployment", "LLM"]
 
 dependencies = [
   "PyYAML>=5.4",
@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.scripts]
-# Primary CLI entry point — wraps start_orchestration.py::entry_point
+# Primary CLI entry point
 entities-dev = "start_orchestration:entry_point"
 
 [project.optional-dependencies]
@@ -33,6 +33,22 @@ dev = [
   "build",
   "twine",
 ]
+
+# -------------------------------------------------------------------------
+# Bundle compose files and .env.example as package data so they are
+# available after `pip install projectdavid-platform` without any git clone.
+# start_orchestration.py resolves these via importlib.resources.
+# -------------------------------------------------------------------------
+[tool.setuptools.package-data]
+"projectdavid_platform" = [
+  "docker-compose.yml",
+  "docker-compose.gpu.yml",
+  ".env.example",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["projectdavid_platform*"]
 
 [tool.black]
 line-length = 100

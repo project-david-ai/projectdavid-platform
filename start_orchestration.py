@@ -1,10 +1,9 @@
 # start_orchestration.py
 #
-# Deployment orchestrator for the Entities platform.
-# Manages the Docker Compose stack, .env generation, and post-startup
-# provisioning scripts (bootstrap-admin, create-user, setup-assistant).
+# Deployment orchestrator for the Project David / Entities platform.
+# Distributed as part of the `projectdavid-platform` pip package.
 #
-# Run via (after pip install -e .):
+# After `pip install projectdavid-platform`:
 #   entities-dev --mode up
 #   entities-dev --mode up --gpu
 #   entities-dev configure --set HF_TOKEN=hf_abc123
@@ -14,6 +13,7 @@
 #
 from __future__ import annotations
 
+import importlib.resources
 import logging
 import os
 import platform
@@ -76,6 +76,55 @@ API_SERVICE_NAME = "api"
 API_CONTAINER_NAME = "fastapi_cosmic_catalyst"
 BASE_COMPOSE_FILE = "docker-compose.yml"
 GPU_COMPOSE_FILE = "docker-compose.gpu.yml"
+PACKAGE_NAME = "projectdavid_platform"
+
+
+# ---------------------------------------------------------------------------
+# Compose file path resolution
+# ---------------------------------------------------------------------------
+
+
+def _resolve_compose_file(filename: str) -> str:
+    """
+    Resolve the path to a compose file.
+
+    Priority:
+      1. Current working directory — allows users to override bundled files
+         by placing their own copy locally.
+      2. Installed package data — used when running after `pip install
+         projectdavid-platform` with no local copy present.
+
+    This means `entities-dev` works correctly in three scenarios:
+      - Cloned repo (dev mode): uses files from the repo root
+      - pip installed, no local files: uses bundled package data
+      - pip installed, local overrides present: local copy wins
+    """
+    local = Path.cwd() / filename
+    if local.exists():
+        log.debug("Using local compose file: %s", local)
+        return str(local)
+
+    try:
+        # importlib.resources is the correct way to access package data
+        # in installed packages — works with wheels, zips, and editable installs
+        pkg_files = importlib.resources.files(PACKAGE_NAME)
+        resource = pkg_files / filename
+        # Extract to a temp path so docker compose can read it as a file
+        # (some importlib backends return non-filesystem paths)
+        with importlib.resources.as_file(resource) as p:
+            resolved = str(p)
+        log.debug("Using bundled compose file: %s", resolved)
+        return resolved
+    except (FileNotFoundError, ModuleNotFoundError, TypeError):
+        # Package not installed or resource missing — fall back to cwd name
+        # and let docker compose produce a clear error
+        log.warning(
+            "Compose file '%s' not found locally or in installed package. "
+            "If you installed via pip, try reinstalling: pip install --force-reinstall projectdavid-platform",
+            filename,
+        )
+        return filename
+
 
 # ---------------------------------------------------------------------------
 # Typer app
@@ -83,9 +132,11 @@ GPU_COMPOSE_FILE = "docker-compose.gpu.yml"
 app = typer.Typer(
     name="entities-dev",
     help=(
-        "Deployment orchestrator for the Entities platform.\n\n"
-        "Manages the Docker Compose stack, .env generation, and post-startup\n"
-        "provisioning scripts."
+        "Deployment orchestrator for the Project David / Entities platform.\n\n"
+        "Install:  pip install projectdavid-platform\n"
+        "Start:    entities-dev --mode up\n"
+        "GPU:      entities-dev --mode up --gpu\n"
+        "Config:   entities-dev configure --set HF_TOKEN=hf_abc123"
     ),
     add_completion=False,
 )
@@ -172,15 +223,12 @@ class Orchestrator:
     }
 
     _DEFAULT_VALUES = {
-        # Base URLs — internal Docker network names
         "ASSISTANTS_BASE_URL": "http://localhost:9000",
         "SANDBOX_SERVER_URL": "http://sandbox:8000",
         "DOWNLOAD_BASE_URL": "http://localhost:9000/v1/files/download",
-        # AI model configuration
         "HF_TOKEN": "",
         "HF_CACHE_PATH": "",
         "VLLM_MODEL": "Qwen/Qwen2.5-VL-3B-Instruct",
-        # Platform settings
         "BASE_URL_HEALTH": "http://localhost:9000/v1/health",
         "SHELL_SERVER_URL": "ws://sandbox:8000/ws/computer",
         "SHELL_SERVER_EXTERNAL_URL": "ws://localhost:8000/ws/computer",
@@ -188,24 +236,20 @@ class Orchestrator:
         "DISABLE_FIREJAIL": "true",
         "SHARED_PATH": "./shared_data",
         "AUTO_MIGRATE": "1",
-        # Database
         "MYSQL_HOST": DEFAULT_DB_SERVICE_NAME,
         "MYSQL_PORT": DEFAULT_DB_CONTAINER_PORT,
         "MYSQL_DATABASE": "entities_db",
         "MYSQL_USER": "api_user",
         "REDIS_URL": "redis://redis:6379/0",
-        # Admin
         "ADMIN_USER_EMAIL": "admin@example.com",
         "ADMIN_USER_ID": "",
         "ADMIN_KEY_PREFIX": "",
-        # SMB
         "SMBCLIENT_SERVER": "samba_server",
         "SMBCLIENT_SHARE": "cosmic_share",
         "SMBCLIENT_USERNAME": "samba_user",
         "SMBCLIENT_PORT": "445",
         "SAMBA_USERID": "1000",
         "SAMBA_GROUPID": "1000",
-        # Misc
         "LOG_LEVEL": "INFO",
         "PYTHONUNBUFFERED": "1",
     }
@@ -278,7 +322,6 @@ class Orchestrator:
         ],
     }
 
-    # Keys printed in the post-generation summary
     _SUMMARY_KEYS = [
         "API_KEY",
         "ADMIN_API_KEY",
@@ -294,6 +337,9 @@ class Orchestrator:
         self.log = log
         if getattr(self.args, "verbose", False):
             self.log.setLevel(logging.DEBUG)
+        # Resolve compose file paths once at init so all methods share them
+        self.base_compose = _resolve_compose_file(BASE_COMPOSE_FILE)
+        self.gpu_compose = _resolve_compose_file(GPU_COMPOSE_FILE)
         self.compose_config = self._load_compose_config()
         self._check_for_required_env_file()
         self._configure_shared_path()
@@ -305,25 +351,19 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def _compose_files(self) -> List[str]:
-        """Return the list of -f flags for the active compose configuration."""
-        files = ["-f", BASE_COMPOSE_FILE]
+        files = ["-f", self.base_compose]
         if getattr(self.args, "gpu", False):
-            files += ["-f", GPU_COMPOSE_FILE]
+            files += ["-f", self.gpu_compose]
         return files
 
-    def _run_command(
-        self, cmd_list, check=True, capture_output=False, text=True, suppress_logs=False, **kwargs
-    ):
+    def _run_command(self, cmd_list, check=True, capture_output=False,
+                     text=True, suppress_logs=False, **kwargs):
         if not suppress_logs:
             self.log.info("Running: %s", " ".join(cmd_list))
         try:
             result = subprocess.run(
-                cmd_list,
-                check=check,
-                capture_output=capture_output,
-                text=text,
-                shell=self.is_windows,
-                **kwargs,
+                cmd_list, check=check, capture_output=capture_output,
+                text=text, shell=self.is_windows, **kwargs,
             )
             return result
         except subprocess.CalledProcessError as e:
@@ -348,20 +388,24 @@ class Orchestrator:
             )
 
     def _load_compose_config(self):
-        p = Path(BASE_COMPOSE_FILE)
+        p = Path(self.base_compose)
         if not p.is_file():
             return None
         try:
             return yaml.safe_load(p.read_text(encoding="utf-8"))
         except Exception as e:
-            self.log.error("Error parsing %s: %s", BASE_COMPOSE_FILE, e)
+            self.log.error("Error parsing %s: %s", self.base_compose, e)
             return None
 
     def _get_host_port_from_compose_service(self, service_name, container_port):
         if not self.compose_config:
             return None
         try:
-            ports = self.compose_config.get("services", {}).get(service_name, {}).get("ports", [])
+            ports = (
+                self.compose_config.get("services", {})
+                .get(service_name, {})
+                .get("ports", [])
+            )
             container_port_base = str(container_port).split("/")[0]
             for mapping in ports:
                 parts = str(mapping).split(":")
@@ -429,9 +473,7 @@ class Orchestrator:
             typer.echo(f"  {help_text}\n")
             value = typer.prompt(
                 f"  {label} (press Enter to skip)",
-                default="",
-                show_default=False,
-                hide_input=hide,
+                default="", show_default=False, hide_input=hide,
             )
             if value.strip():
                 env_values[key] = value.strip()
@@ -496,7 +538,7 @@ class Orchestrator:
 
         # Step 6 — write
         env_lines = [
-            f"# Auto-generated .env — entities-dev orchestrator — {time.strftime('%Y-%m-%d %H:%M:%S %Z')}",
+            f"# Auto-generated by projectdavid-platform — {time.strftime('%Y-%m-%d %H:%M:%S %Z')}",
             "# Update optional values any time with:",
             "#   entities-dev configure --set HF_TOKEN=<token>",
             "#   entities-dev configure --interactive",
@@ -610,9 +652,7 @@ class Orchestrator:
             if not os.environ.get(key, "").strip():
                 self.log.warning(
                     "'%s' not set — vLLM/HuggingFace features unavailable. "
-                    "Set with: entities-dev configure --set %s=<value>",
-                    key,
-                    key,
+                    "Set with: entities-dev configure --set %s=<value>", key, key,
                 )
 
     # ------------------------------------------------------------------
@@ -631,21 +671,9 @@ class Orchestrator:
         try:
             result = self._run_command(
                 ["docker", "ps", "--filter", f"name=^{container_name}$", "--format", "{{.Names}}"],
-                capture_output=True,
-                check=False,
-                suppress_logs=True,
+                capture_output=True, check=False, suppress_logs=True,
             )
             return result.stdout.strip() == container_name
-        except Exception:
-            return False
-
-    def _has_nvidia_support(self) -> bool:
-        cmd = shutil.which("nvidia-smi")
-        if not cmd:
-            return False
-        try:
-            self._run_command([cmd], check=True, capture_output=True, suppress_logs=True)
-            return True
         except Exception:
             return False
 
@@ -673,8 +701,7 @@ class Orchestrator:
                     "View logs: docker compose %s logs -f --tail=50",
                     " ".join(self._compose_files()),
                 )
-        except subprocess.CalledProcessError as e:
-            self.log.critical("'docker compose up' failed (code %s).", e.returncode)
+        except subprocess.CalledProcessError:
             raise SystemExit(1)
 
     def _handle_down(self):
@@ -714,16 +741,14 @@ class Orchestrator:
         if confirm.strip() != "confirm nuke":
             raise SystemExit(0)
         self._run_command(
-            ["docker", "compose"]
-            + self._compose_files()
-            + ["down", "--volumes", "--remove-orphans"],
+            ["docker", "compose"] + self._compose_files() + ["down", "--volumes", "--remove-orphans"],
             check=False,
         )
         self._run_command(["docker", "system", "prune", "-a", "--volumes", "--force"], check=True)
         self.log.info("Nuke complete.")
 
     # ------------------------------------------------------------------
-    # Exec helpers — run provisioning scripts in the api container
+    # Exec helpers
     # ------------------------------------------------------------------
 
     def _ensure_api_running(self, action: str):
@@ -734,19 +759,13 @@ class Orchestrator:
                 API_CONTAINER_NAME,
             )
             raise SystemExit(1)
-        self.log.debug("'%s' confirmed running for '%s'.", API_CONTAINER_NAME, action)
 
     def exec_bootstrap_admin(self, db_url: Optional[str] = None):
         self._ensure_api_running("bootstrap-admin")
         cmd = [
-            "docker",
-            "compose",
-            "-f",
-            BASE_COMPOSE_FILE,
-            "exec",
-            API_SERVICE_NAME,
-            "python",
-            "/app/scripts/bootstrap_admin.py",
+            "docker", "compose", "-f", self.base_compose,
+            "exec", API_SERVICE_NAME,
+            "python", "/app/scripts/bootstrap_admin.py",
         ]
         if db_url:
             cmd.extend(["--db-url", db_url])
@@ -766,14 +785,9 @@ class Orchestrator:
     ):
         self._ensure_api_running("create-user")
         cmd = [
-            "docker",
-            "compose",
-            "-f",
-            BASE_COMPOSE_FILE,
-            "exec",
-            API_SERVICE_NAME,
-            "python",
-            "/app/scripts/create_user.py",
+            "docker", "compose", "-f", self.base_compose,
+            "exec", API_SERVICE_NAME,
+            "python", "/app/scripts/create_user.py",
         ]
         if email:
             cmd.extend(["--email", email])
@@ -784,8 +798,7 @@ class Orchestrator:
         try:
             self._run_command(cmd, check=True, suppress_logs=True)
             self.log.info(
-                "create_user finished. Copy the printed plain-text API key securely — "
-                "it does not need to go back into .env."
+                "create_user finished. Deliver the printed API key to the user securely."
             )
         except subprocess.CalledProcessError:
             raise SystemExit(1)
@@ -793,18 +806,11 @@ class Orchestrator:
     def exec_setup_assistant(self, api_key: str, user_id: str):
         self._ensure_api_running("setup-assistant")
         cmd = [
-            "docker",
-            "compose",
-            "-f",
-            BASE_COMPOSE_FILE,
-            "exec",
-            API_SERVICE_NAME,
-            "python",
-            "/app/scripts/bootstrap_default_assistant.py",
-            "--api-key",
-            api_key,
-            "--user-id",
-            user_id,
+            "docker", "compose", "-f", self.base_compose,
+            "exec", API_SERVICE_NAME,
+            "python", "/app/scripts/bootstrap_default_assistant.py",
+            "--api-key", api_key,
+            "--user-id", user_id,
         ]
         try:
             self._run_command(cmd, check=True, suppress_logs=True)
@@ -818,7 +824,9 @@ class Orchestrator:
 
     def run(self):
         mode = getattr(self.args, "mode", "up")
-        self.log.info("Mode: %s%s", mode, " + GPU" if getattr(self.args, "gpu", False) else "")
+        self.log.info(
+            "Mode: %s%s", mode, " + GPU" if getattr(self.args, "gpu", False) else ""
+        )
 
         if getattr(self.args, "nuke", False):
             self._handle_nuke()
@@ -858,7 +866,8 @@ def main(
         "up", "--mode", help="Stack action: up | build | both | down_only | logs"
     ),
     gpu: bool = typer.Option(
-        False, "--gpu", help="Include GPU services (vLLM + Ollama) via docker-compose.gpu.yml."
+        False, "--gpu",
+        help="Include GPU services (vLLM + Ollama) via docker-compose.gpu.yml."
     ),
     down: bool = typer.Option(False, "--down", help="Run 'down' before starting."),
     clear_volumes: bool = typer.Option(
@@ -877,15 +886,15 @@ def main(
     verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
 ) -> None:
     """
-    Manage the Entities platform stack.
+    Manage the Project David / Entities platform stack.
 
-    Examples:
-      entities-dev --mode up
-      entities-dev --mode up --gpu
-      entities-dev --mode up --down --clear-volumes
-      entities-dev --mode logs --follow
-      entities-dev configure --set HF_TOKEN=hf_abc123
-      entities-dev bootstrap-admin
+    Examples:\n
+      entities-dev --mode up\n
+      entities-dev --mode up --gpu\n
+      entities-dev --mode up --down --clear-volumes\n
+      entities-dev --mode logs --follow\n
+      entities-dev configure --set HF_TOKEN=hf_abc123\n
+      entities-dev bootstrap-admin\n
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -902,19 +911,10 @@ def main(
         down = True
 
     args = SimpleNamespace(
-        mode=mode,
-        gpu=gpu,
-        down=down,
-        clear_volumes=clear_volumes,
-        nuke=nuke,
-        build_before_up=build_before_up,
-        force_recreate=force_recreate,
-        attached=attached,
-        follow=follow,
-        tail=tail,
-        no_cache=no_cache,
-        parallel=parallel,
-        verbose=verbose,
+        mode=mode, gpu=gpu, down=down, clear_volumes=clear_volumes, nuke=nuke,
+        build_before_up=build_before_up, force_recreate=force_recreate,
+        attached=attached, follow=follow, tail=tail,
+        no_cache=no_cache, parallel=parallel, verbose=verbose,
     )
 
     try:
@@ -936,21 +936,23 @@ def configure(
         None, "--set", "-s", help="Set KEY=VALUE in .env.", metavar="KEY=VALUE"
     ),
     interactive: bool = typer.Option(
-        False, "--interactive", "-i", help="Interactively prompt for user-required variables."
+        False, "--interactive", "-i",
+        help="Interactively prompt for user-required variables."
     ),
 ) -> None:
     """
     Update variables in an existing .env without regenerating secrets.
 
-    Examples:
-      entities-dev configure --set HF_TOKEN=hf_abc123
-      entities-dev configure --set VLLM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct
-      entities-dev configure --interactive
+    Examples:\n
+      entities-dev configure --set HF_TOKEN=hf_abc123\n
+      entities-dev configure --set VLLM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct\n
+      entities-dev configure --interactive\n
     """
     env_path = Path(Orchestrator._ENV_FILE)
     if not env_path.exists():
         typer.echo(
-            f"[error] '{Orchestrator._ENV_FILE}' not found. Run 'entities-dev --mode up' first.",
+            f"[error] '{Orchestrator._ENV_FILE}' not found. "
+            "Run 'entities-dev --mode up' first.",
             err=True,
         )
         raise SystemExit(1)
@@ -1038,9 +1040,9 @@ def bootstrap_admin(
     """
     Run bootstrap_admin.py inside the running api container.
 
-    Provisions the default admin user. The stack must be running first.
-    Copy any printed ADMIN_API_KEY to a safe place — you'll need it for
-    create-user and setup-assistant.
+    Provisions the default admin user. Stack must be running first.
+    Copy any printed ADMIN_API_KEY — you will need it for create-user
+    and setup-assistant.
     """
     args = SimpleNamespace(verbose=verbose, gpu=False)
     o = Orchestrator(args)
@@ -1059,9 +1061,8 @@ def create_user(
     """
     Run create_user.py inside the running api container.
 
-    Requires the stack to be running and ADMIN_API_KEY to be set in .env.
-    The printed plain-text API key should be delivered to the user securely —
-    it does not need to go back into .env.
+    Requires the stack to be running and ADMIN_API_KEY set in .env.
+    Deliver the printed plain-text API key to the user securely.
     """
     args = SimpleNamespace(verbose=verbose, gpu=False)
     o = Orchestrator(args)
@@ -1077,10 +1078,9 @@ def setup_assistant(
     """
     Run bootstrap_default_assistant.py inside the running api container.
 
-    Requires the stack to be running, and the admin API key + user ID
-    from a completed bootstrap-admin run.
+    Requires admin API key and user ID from a completed bootstrap-admin run.
 
-    Example:
+    Example:\n
       entities-dev setup-assistant --api-key ad_... --user-id usr_...
     """
     args = SimpleNamespace(verbose=verbose, gpu=False)
@@ -1089,8 +1089,19 @@ def setup_assistant(
 
 
 # ---------------------------------------------------------------------------
-# Allow `python start_orchestration.py` as a fallback
+# Package structure note
 # ---------------------------------------------------------------------------
+# For `importlib.resources` to resolve bundled compose files, the package
+# directory `projectdavid_platform/` must exist and contain:
+#   - __init__.py
+#   - docker-compose.yml
+#   - docker-compose.gpu.yml
+#   - .env.example
+#
+# See pyproject.toml [tool.setuptools.package-data] for the manifest.
+# ---------------------------------------------------------------------------
+
+
 def entry_point():
     app()
 
