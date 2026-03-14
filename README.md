@@ -7,6 +7,9 @@
 
 Deployment orchestrator for the Project David / Entities platform. Provides a single command to bring up the complete infrastructure stack, including database, vector store, search, observability, secure code execution, and optional GPU inference services.
 
+This package is intended for production use.
+
+
 ---
 
 ## Installation
@@ -251,12 +254,11 @@ Both owned images are published to Docker Hub and updated automatically on each 
 
 ## Related Repositories
 
-| Repository | Purpose |
-|---|---|
-| [entities_api](https://github.com/frankie336/entities_api) | FastAPI backend source code, inference engine, and tooling framework |
-| [projectdavid](https://github.com/frankie336/projectdavid) | Python SDK for interacting with the Entities API |
-| [platform-docker](https://github.com/project-david-ai/platform-docker) | This repository — deployment orchestration |
-
+| Repository                                                             | Purpose                                                                 |
+|------------------------------------------------------------------------|-------------------------------------------------------------------------|
+| [platform](https://github.com/project-david-ai/platform)                 | The source code of this package                                         |
+| [projectdavid](https://github.com/project-david-ai/projectdavid)             | Python SDK for programatic inteaction with this API, **very important** |
+| 
 ---
 
 ## Working with the Source Code
@@ -264,10 +266,66 @@ Both owned images are published to Docker Hub and updated automatically on each 
 This repository is intended for deploying prebuilt images. To develop, extend, or contribute to the platform source:
 
 ```bash
-git clone https://github.com/frankie336/entities_api.git
-cd entities_api
+git clone https://github.com/project-david-ai/platform
 pip install -e .
 ```
+
+### Avoid mixing environments.
+
+---
+
+## Client Operations
+
+Platform hosts over 80 API endpoints. These manage the lifecycle of
+basic to advanced LLM inference workflows.
+
+It is recommended to use the [projectdavid](https://github.com/project-david-ai/projectdavid) Python SDK to interact with the API.
+
+## Your Architecture
+
+Do not use the API as your backend.
+
+A typical design should follow a three-tier architecture:
+
+- projectdavid-platform API is your inference orchestrator, like OpenAI's Assistants API
+- Your backend
+- Your frontend
+
+See [here](https://github.com/project-david-ai/reference-backend) for a [reference](https://github.com/project-david-ai/reference-backend) backend app.
+
+See [here](https://github.com/project-david-ai/reference-frontend) for a [reference](https://github.com/project-david-ai/reference-frontend) frontend app.
+
+## The SDK
+
+
+Install with:  
+```bash
+pip install projectdavid
+```
+
+If you want to use the integrated vector store pipeline (RAG):
+```bash
+pip install projectdavid[embeddings]
+```
+See the quick start guide [here](https://github.com/project-david-ai/projectdavid_docs/blob/master/src/pages/sdk/sdk-quick-start.md).
+
+See the complete SDK documentation [here](https://github.com/project-david-ai/projectdavid_docs/tree/master/src/pages/sdk).
+
+
+
+## A Quick Note on Privacy
+
+**No data or telemetry leaves the stack but for the following:**
+
+1. You choose to use an external inference endpoint (e.g. `together-ai/Qwen/Qwen2.5-72B-Instruct`)
+
+2. Your AI assistant calls the web search or deep research platform tools at runtime.   
+
+3. One of your own tools calls an external API.
+
+4. You load an image from an external URL when using a vision model
+
+**Your Instance of this  stack is unique, with unique secrets, we cannot see your conversations, data, or secrets.**
 
 ---
 
