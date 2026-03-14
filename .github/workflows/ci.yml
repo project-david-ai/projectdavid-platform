@@ -51,7 +51,9 @@ jobs:
           docker compose -f docker-compose.yml -f docker-compose.gpu.yml config --quiet --no-interpolate
 
   # ──────────────────────────────────────────────────────────────────────────
-  # Release — semantic versioning and changelog
+  # Release — semantic versioning, changelog, and GitHub release
+  # Uses cycjimmy/semantic-release-action which correctly exposes step outputs
+  # so the publish job can gate on whether a release was actually cut.
   # ──────────────────────────────────────────────────────────────────────────
   release:
     name: Git Version & Changelog
@@ -59,7 +61,6 @@ jobs:
     needs: lint
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     outputs:
-      # Expose the new version tag so the publish job can use it
       new_release_published: ${{ steps.semantic.outputs.new_release_published }}
       new_release_version: ${{ steps.semantic.outputs.new_release_version }}
     steps:
@@ -68,27 +69,31 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: true
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Node.js for semantic-release
-        uses: actions/setup-node@v4
+      - name: Set up Python (needed for prepareCmd in .releaserc.json)
+        uses: actions/setup-python@v5
         with:
-          node-version: '20'
-
-      - name: Install semantic-release
-        run: |
-          npm install -g semantic-release \
-            @semantic-release/commit-analyzer \
-            @semantic-release/release-notes-generator \
-            @semantic-release/changelog \
-            @semantic-release/exec \
-            @semantic-release/git \
-            @semantic-release/github
+          python-version: '3.11'
 
       - name: Run semantic-release
         id: semantic
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          extra_plugins: |
+            @semantic-release/commit-analyzer
+            @semantic-release/release-notes-generator
+            @semantic-release/changelog
+            @semantic-release/exec
+            @semantic-release/git
+            @semantic-release/github
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx semantic-release
+
+      - name: Report release outcome
+        if: steps.semantic.outputs.new_release_published == 'true'
+        run: |
+          echo "New release: v${{ steps.semantic.outputs.new_release_version }}"
 
   # ──────────────────────────────────────────────────────────────────────────
   # Publish — build wheel and push to PyPI
@@ -104,8 +109,7 @@ jobs:
       - name: Checkout repository at new release tag
         uses: actions/checkout@v4
         with:
-          # Check out the tag that semantic-release just pushed so
-          # the version in pyproject.toml is already bumped
+          # Check out the bumped tag so pyproject.toml already has the new version
           ref: v${{ needs.release.outputs.new_release_version }}
 
       - name: Set up Python
