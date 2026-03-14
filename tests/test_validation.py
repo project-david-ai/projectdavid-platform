@@ -9,8 +9,6 @@ Verifies that:
 """
 from __future__ import annotations
 
-import os
-
 import pytest
 
 

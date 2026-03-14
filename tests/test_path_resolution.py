@@ -13,8 +13,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from projectdavid_platform.start_orchestration import (
     BASE_COMPOSE_FILE,
     GPU_COMPOSE_FILE,
@@ -55,8 +53,6 @@ class TestPackageDataFallback:
         fake_path = tmp_path / "bundled" / BASE_COMPOSE_FILE
         fake_path.parent.mkdir()
         fake_path.write_text("# bundled", encoding="utf-8")
-
-        import importlib.resources
 
         mock_resource = MagicMock()
         mock_context = MagicMock()
