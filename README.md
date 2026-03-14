@@ -140,6 +140,60 @@ flowchart TD
 
 ---
 
+
+# System requirements — Project David platform
+
+## Services
+
+| Service | Image | Resource needs | Network |
+|---|---|---|---|
+| **MySQL (db)** — Database | `mysql:8.0` | 2+ CPU cores, 2GB+ RAM. Persistent volume (`mysql_data`) | Internal + port 3307 (local tooling only via `SPECIAL_DB_URL`) |
+| **Qdrant** — Vector store | `qdrant/qdrant:latest` | 1+ CPU, 2GB+ RAM. Persistent volume (`qdrant_storage`) | Internal only |
+| **Redis** — Cache / queue | `redis:7` | 512MB+ RAM. Persistent volume (`redis_data`) | Internal only |
+| **Browserless / Chromium** — Web agent browser | `ghcr.io/browserless/chromium:latest` | 2+ CPU, 1GB+ RAM per session. Up to 10 concurrent sessions | Internal only |
+| **SearXNG** — Web search engine | `searxng/searxng:latest` | 512MB+ RAM. Depends on Redis | Internal only |
+| **OTEL Collector** — Observability | `otel/opentelemetry-collector-contrib:latest` | 256MB+ RAM. Depends on Jaeger | Internal only |
+| **Jaeger** — Trace UI | `jaegertracing/all-in-one:latest` | 512MB+ RAM. No persistent volume needed | Internal only |
+| **Ollama** — Local LLM inference | `ollama/ollama:latest` | 4GB+ RAM, 8GB+ for 7B models. Persistent volume (`ollama_data`) | Internal only |
+| **vLLM** — GPU LLM inference *(optional)* | `vllm/vllm-openai:latest` | Nvidia GPU required. `nvidia-container-toolkit` on host. 8GB+ VRAM (16GB+ recommended) | Internal only. `runtime: nvidia` |
+| **FastAPI (api)** — Core orchestration API, Python 3.11 | Custom build — `docker/api/Dockerfile` | 2+ CPU, 2GB+ RAM. Depends on all services. `src/` volume-mounted for dev | Internal only — exposed via Nginx |
+| **Sandbox** — Code execution, Python 3.11 | Custom build — `docker/sandbox/Dockerfile` | 2+ CPU, 1GB+ RAM. Requires `SYS_ADMIN` + `/dev/fuse`. `seccomp:unconfined` | Internal only |
+| **Samba** — File share | `dperson/samba` | 256MB+ RAM. Shared path volume mount | Internal only |
+| **Nginx** — Reverse proxy | `nginx:alpine` | 128MB+ RAM. Config at `docker/nginx/nginx.conf` | Port 80 (443 when TLS ready). Single public entry point |
+
+---
+
+## Minimum host requirements
+
+| Resource | Minimum | Notes |
+|---|---|---|
+| CPU | 4 cores | 8+ cores recommended |
+| RAM | 16GB | 32GB+ if running vLLM |
+| Disk | 50GB free | SSD recommended. Ollama model storage can grow large |
+| GPU | — | Nvidia GPU with 8GB+ VRAM, optional, required only for vLLM |
+
+---
+
+## Runtime dependencies
+
+- Docker Engine 24+
+- Docker Compose v2+
+- `nvidia-container-toolkit` — only required if using vLLM
+- `/dev/fuse` available on host — required by the sandbox container
+
+---
+
+## Notes
+
+- **vLLM is optional.** Without an Nvidia GPU and `nvidia-container-toolkit`, comment out the `vllm` service block and its `depends_on` entry in the `api` service. The rest of the stack runs without it.
+- **Sandbox requires elevated host privileges.** The sandbox container needs `SYS_ADMIN`, `/dev/fuse`, and `seccomp:unconfined`. It will not run on locked-down hosts or most managed container platforms (AWS ECS, Google Cloud Run, etc.) without special configuration.
+- **MySQL port 3307** is exposed on the host for local tooling only (e.g. DBeaver, DataGrip via `SPECIAL_DB_URL`). Remove this binding in production.
+- **All other services are internal only.** No ports are exposed except Nginx (80/443). The API, sandbox, Samba, Redis, Qdrant, Ollama, and vLLM are only reachable within the `my_custom_network` Docker bridge network.
+
+
+
+
+
 ## Prerequisites
 
 - Docker and Docker Compose
