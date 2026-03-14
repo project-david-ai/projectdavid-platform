@@ -22,7 +22,7 @@ dependencies = [
 
 [project.scripts]
 # Primary CLI entry point
-entities-dev = "start_orchestration:entry_point"
+platform = "start_orchestration:entry_point"
 
 [project.optional-dependencies]
 dev = [

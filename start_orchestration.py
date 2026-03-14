@@ -4,19 +4,19 @@
 # Distributed as part of the `projectdavid-platform` pip package.
 #
 # After `pip install projectdavid-platform`:
-#   entities-dev --mode up
-#   entities-dev --mode up --gpu
-#   entities-dev configure --set HF_TOKEN=hf_abc123
-#   entities-dev bootstrap-admin
-#   entities-dev create-user --email user@example.com --name "Alice"
-#   entities-dev setup-assistant --api-key ad_... --user-id usr_...
+#   platform --mode up
+#   platform --mode up --gpu
+#   platform configure --set HF_TOKEN=hf_abc123
+#   platform bootstrap-admin
+#   platform create-user --email user@example.com --name "Alice"
+#   platform setup-assistant --api-key ad_... --user-id usr_...
 #
 from __future__ import annotations
 
 import importlib.resources
 import logging
 import os
-import platform
+import platform as _platform
 import re
 import secrets
 import shutil
@@ -91,13 +91,8 @@ def _resolve_compose_file(filename: str) -> str:
     Priority:
       1. Current working directory — allows users to override bundled files
          by placing their own copy locally.
-      2. Installed package data — used when running after `pip install
-         projectdavid-platform` with no local copy present.
-
-    This means `entities-dev` works correctly in three scenarios:
-      - Cloned repo (dev mode): uses files from the repo root
-      - pip installed, no local files: uses bundled package data
-      - pip installed, local overrides present: local copy wins
+      2. Installed package data — used when running after
+         `pip install projectdavid-platform` with no local copy present.
     """
     local = Path.cwd() / filename
     if local.exists():
@@ -105,22 +100,16 @@ def _resolve_compose_file(filename: str) -> str:
         return str(local)
 
     try:
-        # importlib.resources is the correct way to access package data
-        # in installed packages — works with wheels, zips, and editable installs
         pkg_files = importlib.resources.files(PACKAGE_NAME)
         resource = pkg_files / filename
-        # Extract to a temp path so docker compose can read it as a file
-        # (some importlib backends return non-filesystem paths)
         with importlib.resources.as_file(resource) as p:
             resolved = str(p)
         log.debug("Using bundled compose file: %s", resolved)
         return resolved
     except (FileNotFoundError, ModuleNotFoundError, TypeError):
-        # Package not installed or resource missing — fall back to cwd name
-        # and let docker compose produce a clear error
         log.warning(
             "Compose file '%s' not found locally or in installed package. "
-            "If you installed via pip, try reinstalling: pip install --force-reinstall projectdavid-platform",
+            "Try reinstalling: pip install --force-reinstall projectdavid-platform",
             filename,
         )
         return filename
@@ -130,13 +119,13 @@ def _resolve_compose_file(filename: str) -> str:
 # Typer app
 # ---------------------------------------------------------------------------
 app = typer.Typer(
-    name="entities-dev",
+    name="platform",
     help=(
         "Deployment orchestrator for the Project David / Entities platform.\n\n"
         "Install:  pip install projectdavid-platform\n"
-        "Start:    entities-dev --mode up\n"
-        "GPU:      entities-dev --mode up --gpu\n"
-        "Config:   entities-dev configure --set HF_TOKEN=hf_abc123"
+        "Start:    platform --mode up\n"
+        "GPU:      platform --mode up --gpu\n"
+        "Config:   platform configure --set HF_TOKEN=hf_abc123"
     ),
     add_completion=False,
 )
@@ -154,9 +143,6 @@ class Orchestrator:
     _ENV_FILE = ".env"
     _ENV_EXAMPLE_FILE = ".env.example"
 
-    # -------------------------------------------------------------------------
-    # Secrets always force-generated — never hardcoded, never default.
-    # -------------------------------------------------------------------------
     _GENERATED_SECRETS = [
         "SIGNED_URL_SECRET",
         "API_KEY",
@@ -177,10 +163,6 @@ class Orchestrator:
         "TOOL_VECTOR_STORE_SEARCH",
     ]
 
-    # -------------------------------------------------------------------------
-    # User-supplied values — cannot be auto-generated.
-    # Format: KEY -> (prompt_label, help_text, hide_input)
-    # -------------------------------------------------------------------------
     _USER_REQUIRED = {
         "HF_TOKEN": (
             "HF_TOKEN",
@@ -193,9 +175,6 @@ class Orchestrator:
         ),
     }
 
-    # -------------------------------------------------------------------------
-    # Rotation safety categories
-    # -------------------------------------------------------------------------
     _DANGEROUS_ROTATION = {
         "MYSQL_PASSWORD",
         "MYSQL_ROOT_PASSWORD",
@@ -333,11 +312,10 @@ class Orchestrator:
     # ------------------------------------------------------------------
     def __init__(self, args: SimpleNamespace) -> None:
         self.args = args
-        self.is_windows = platform.system() == "Windows"
+        self.is_windows = _platform.system() == "Windows"
         self.log = log
         if getattr(self.args, "verbose", False):
             self.log.setLevel(logging.DEBUG)
-        # Resolve compose file paths once at init so all methods share them
         self.base_compose = _resolve_compose_file(BASE_COMPOSE_FILE)
         self.gpu_compose = _resolve_compose_file(GPU_COMPOSE_FILE)
         self.compose_config = self._load_compose_config()
@@ -356,14 +334,19 @@ class Orchestrator:
             files += ["-f", self.gpu_compose]
         return files
 
-    def _run_command(self, cmd_list, check=True, capture_output=False,
-                     text=True, suppress_logs=False, **kwargs):
+    def _run_command(
+        self, cmd_list, check=True, capture_output=False, text=True, suppress_logs=False, **kwargs
+    ):
         if not suppress_logs:
             self.log.info("Running: %s", " ".join(cmd_list))
         try:
             result = subprocess.run(
-                cmd_list, check=check, capture_output=capture_output,
-                text=text, shell=self.is_windows, **kwargs,
+                cmd_list,
+                check=check,
+                capture_output=capture_output,
+                text=text,
+                shell=self.is_windows,
+                **kwargs,
             )
             return result
         except subprocess.CalledProcessError as e:
@@ -401,11 +384,7 @@ class Orchestrator:
         if not self.compose_config:
             return None
         try:
-            ports = (
-                self.compose_config.get("services", {})
-                .get(service_name, {})
-                .get("ports", [])
-            )
+            ports = self.compose_config.get("services", {}).get(service_name, {}).get("ports", [])
             container_port_base = str(container_port).split("/")[0]
             for mapping in ports:
                 parts = str(mapping).split(":")
@@ -444,7 +423,7 @@ class Orchestrator:
                 needs_prompt[key] = meta
 
         if inherited:
-            typer.echo(f"\n  ✓ Inherited from environment: {', '.join(inherited.keys())}")
+            typer.echo(f"\n  Inherited from environment: {', '.join(inherited.keys())}")
 
         if not needs_prompt:
             return
@@ -452,7 +431,7 @@ class Orchestrator:
         if not sys.stdin.isatty():
             self.log.warning(
                 "Non-interactive environment. User-required variables left blank: %s. "
-                "Set them with: entities-dev configure --set KEY=VALUE",
+                "Set them with: platform configure --set KEY=VALUE",
                 ", ".join(needs_prompt.keys()),
             )
             return
@@ -466,23 +445,23 @@ class Orchestrator:
             "  them, but related features will be unavailable until set.\n"
             "\n"
             "  Set them any time later with:\n"
-            "    entities-dev configure --interactive\n"
-            "    entities-dev configure --set KEY=value\n"
+            "    platform configure --interactive\n"
+            "    platform configure --set KEY=value\n"
         )
         for key, (label, help_text, hide) in needs_prompt.items():
             typer.echo(f"  {help_text}\n")
             value = typer.prompt(
                 f"  {label} (press Enter to skip)",
-                default="", show_default=False, hide_input=hide,
+                default="",
+                show_default=False,
+                hide_input=hide,
             )
             if value.strip():
                 env_values[key] = value.strip()
                 generation_log[key] = "Provided interactively by user"
-                typer.echo(f"  ✓ {key} saved.\n")
+                typer.echo(f"  {key} saved.\n")
             else:
-                self.log.warning(
-                    "'%s' skipped. Run: entities-dev configure --set %s=<value>", key, key
-                )
+                self.log.warning("'%s' skipped. Run: platform configure --set %s=<value>", key, key)
         typer.echo("=" * 60 + "\n")
 
     def _generate_dot_env_file(self):
@@ -531,7 +510,7 @@ class Orchestrator:
             env_values["HF_CACHE_PATH"] = os.path.join(
                 os.path.expanduser("~"), ".cache", "huggingface"
             )
-            generation_log["HF_CACHE_PATH"] = f"Auto-resolved for {platform.system()}"
+            generation_log["HF_CACHE_PATH"] = f"Auto-resolved for {_platform.system()}"
 
         # Step 5 — interactive prompts for user-required values
         self._prompt_user_required(env_values, generation_log)
@@ -540,8 +519,8 @@ class Orchestrator:
         env_lines = [
             f"# Auto-generated by projectdavid-platform — {time.strftime('%Y-%m-%d %H:%M:%S %Z')}",
             "# Update optional values any time with:",
-            "#   entities-dev configure --set HF_TOKEN=<token>",
-            "#   entities-dev configure --interactive",
+            "#   platform configure --set HF_TOKEN=<token>",
+            "#   platform configure --interactive",
             "",
         ]
         processed: set = set()
@@ -596,10 +575,10 @@ class Orchestrator:
             typer.echo(f"  {key:<24}: {value}")
         typer.echo("=" * 60)
         typer.echo(
-            "\n  REMINDER: Use ADMIN_API_KEY when running:\n"
-            "    entities-dev bootstrap-admin\n"
-            "    entities-dev create-user\n"
-            "    entities-dev setup-assistant\n"
+            "\n  Use ADMIN_API_KEY for provisioning commands:\n"
+            "    platform bootstrap-admin\n"
+            "    platform create-user\n"
+            "    platform setup-assistant\n"
         )
 
     def _check_for_required_env_file(self):
@@ -611,7 +590,7 @@ class Orchestrator:
             load_dotenv(dotenv_path=self._ENV_FILE, override=True)
 
     def _configure_shared_path(self):
-        system = platform.system().lower()
+        system = _platform.system().lower()
         shared_path = os.environ.get("SHARED_PATH")
         if not shared_path:
             base = os.path.expanduser("~")
@@ -652,7 +631,9 @@ class Orchestrator:
             if not os.environ.get(key, "").strip():
                 self.log.warning(
                     "'%s' not set — vLLM/HuggingFace features unavailable. "
-                    "Set with: entities-dev configure --set %s=<value>", key, key,
+                    "Set with: platform configure --set %s=<value>",
+                    key,
+                    key,
                 )
 
     # ------------------------------------------------------------------
@@ -671,7 +652,9 @@ class Orchestrator:
         try:
             result = self._run_command(
                 ["docker", "ps", "--filter", f"name=^{container_name}$", "--format", "{{.Names}}"],
-                capture_output=True, check=False, suppress_logs=True,
+                capture_output=True,
+                check=False,
+                suppress_logs=True,
             )
             return result.stdout.strip() == container_name
         except Exception:
@@ -733,15 +716,17 @@ class Orchestrator:
             pass
 
     def _handle_nuke(self):
-        self.log.warning("!!! NUKE MODE — this will destroy all stack data system-wide !!!")
+        self.log.warning("NUKE MODE — this will destroy all stack data system-wide.")
         try:
-            confirm = input(">>> Type 'confirm nuke' to proceed: ")
+            confirm = input("Type 'confirm nuke' to proceed: ")
         except EOFError:
             raise SystemExit(1)
         if confirm.strip() != "confirm nuke":
             raise SystemExit(0)
         self._run_command(
-            ["docker", "compose"] + self._compose_files() + ["down", "--volumes", "--remove-orphans"],
+            ["docker", "compose"]
+            + self._compose_files()
+            + ["down", "--volumes", "--remove-orphans"],
             check=False,
         )
         self._run_command(["docker", "system", "prune", "-a", "--volumes", "--force"], check=True)
@@ -754,8 +739,7 @@ class Orchestrator:
     def _ensure_api_running(self, action: str):
         if not self._is_container_running(API_CONTAINER_NAME):
             self.log.error(
-                "Container '%s' is not running. Start the stack first:\n"
-                "  entities-dev --mode up",
+                "Container '%s' is not running. Start the stack first:\n" "  platform --mode up",
                 API_CONTAINER_NAME,
             )
             raise SystemExit(1)
@@ -763,16 +747,21 @@ class Orchestrator:
     def exec_bootstrap_admin(self, db_url: Optional[str] = None):
         self._ensure_api_running("bootstrap-admin")
         cmd = [
-            "docker", "compose", "-f", self.base_compose,
-            "exec", API_SERVICE_NAME,
-            "python", "/app/scripts/bootstrap_admin.py",
+            "docker",
+            "compose",
+            "-f",
+            self.base_compose,
+            "exec",
+            API_SERVICE_NAME,
+            "python",
+            "/app/scripts/bootstrap_admin.py",
         ]
         if db_url:
             cmd.extend(["--db-url", db_url])
         try:
             self._run_command(cmd, check=True, suppress_logs=True)
             self.log.info(
-                "bootstrap_admin finished. Copy any printed ADMIN_API_KEY to a safe place."
+                "bootstrap-admin finished. Copy any printed ADMIN_API_KEY to a safe place."
             )
         except subprocess.CalledProcessError:
             raise SystemExit(1)
@@ -785,9 +774,14 @@ class Orchestrator:
     ):
         self._ensure_api_running("create-user")
         cmd = [
-            "docker", "compose", "-f", self.base_compose,
-            "exec", API_SERVICE_NAME,
-            "python", "/app/scripts/create_user.py",
+            "docker",
+            "compose",
+            "-f",
+            self.base_compose,
+            "exec",
+            API_SERVICE_NAME,
+            "python",
+            "/app/scripts/create_user.py",
         ]
         if email:
             cmd.extend(["--email", email])
@@ -797,24 +791,29 @@ class Orchestrator:
             cmd.extend(["--key-name", key_name])
         try:
             self._run_command(cmd, check=True, suppress_logs=True)
-            self.log.info(
-                "create_user finished. Deliver the printed API key to the user securely."
-            )
+            self.log.info("create-user finished. Deliver the printed API key to the user securely.")
         except subprocess.CalledProcessError:
             raise SystemExit(1)
 
     def exec_setup_assistant(self, api_key: str, user_id: str):
         self._ensure_api_running("setup-assistant")
         cmd = [
-            "docker", "compose", "-f", self.base_compose,
-            "exec", API_SERVICE_NAME,
-            "python", "/app/scripts/bootstrap_default_assistant.py",
-            "--api-key", api_key,
-            "--user-id", user_id,
+            "docker",
+            "compose",
+            "-f",
+            self.base_compose,
+            "exec",
+            API_SERVICE_NAME,
+            "python",
+            "/app/scripts/bootstrap_default_assistant.py",
+            "--api-key",
+            api_key,
+            "--user-id",
+            user_id,
         ]
         try:
             self._run_command(cmd, check=True, suppress_logs=True)
-            self.log.info("setup_assistant finished.")
+            self.log.info("setup-assistant finished.")
         except subprocess.CalledProcessError:
             raise SystemExit(1)
 
@@ -824,9 +823,7 @@ class Orchestrator:
 
     def run(self):
         mode = getattr(self.args, "mode", "up")
-        self.log.info(
-            "Mode: %s%s", mode, " + GPU" if getattr(self.args, "gpu", False) else ""
-        )
+        self.log.info("Mode: %s%s", mode, " + GPU" if getattr(self.args, "gpu", False) else "")
 
         if getattr(self.args, "nuke", False):
             self._handle_nuke()
@@ -866,14 +863,15 @@ def main(
         "up", "--mode", help="Stack action: up | build | both | down_only | logs"
     ),
     gpu: bool = typer.Option(
-        False, "--gpu",
-        help="Include GPU services (vLLM + Ollama) via docker-compose.gpu.yml."
+        False, "--gpu", help="Include GPU services (vLLM + Ollama) via docker-compose.gpu.yml."
     ),
     down: bool = typer.Option(False, "--down", help="Run 'down' before starting."),
     clear_volumes: bool = typer.Option(
         False, "--clear-volumes", "-v", help="Remove volumes on down."
     ),
-    nuke: bool = typer.Option(False, "--nuke", help="DANGER: destroy all stack data."),
+    nuke: bool = typer.Option(
+        False, "--nuke", help="DANGER: destroy all stack data. Requires confirmation."
+    ),
     build_before_up: bool = typer.Option(False, "--build-before-up", help="Build before up."),
     force_recreate: bool = typer.Option(
         False, "--force-recreate", help="Force-recreate containers."
@@ -889,12 +887,12 @@ def main(
     Manage the Project David / Entities platform stack.
 
     Examples:\n
-      entities-dev --mode up\n
-      entities-dev --mode up --gpu\n
-      entities-dev --mode up --down --clear-volumes\n
-      entities-dev --mode logs --follow\n
-      entities-dev configure --set HF_TOKEN=hf_abc123\n
-      entities-dev bootstrap-admin\n
+      platform --mode up\n
+      platform --mode up --gpu\n
+      platform --mode up --down --clear-volumes\n
+      platform --mode logs --follow\n
+      platform configure --set HF_TOKEN=hf_abc123\n
+      platform bootstrap-admin\n
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -902,7 +900,7 @@ def main(
     valid_modes = {"up", "build", "both", "down_only", "logs"}
     if mode not in valid_modes:
         typer.echo(
-            f"[error] Invalid --mode '{mode}'. Choose from: {', '.join(sorted(valid_modes))}",
+            f"[error] Invalid --mode '{mode}'. " f"Choose from: {', '.join(sorted(valid_modes))}",
             err=True,
         )
         raise SystemExit(1)
@@ -911,10 +909,19 @@ def main(
         down = True
 
     args = SimpleNamespace(
-        mode=mode, gpu=gpu, down=down, clear_volumes=clear_volumes, nuke=nuke,
-        build_before_up=build_before_up, force_recreate=force_recreate,
-        attached=attached, follow=follow, tail=tail,
-        no_cache=no_cache, parallel=parallel, verbose=verbose,
+        mode=mode,
+        gpu=gpu,
+        down=down,
+        clear_volumes=clear_volumes,
+        nuke=nuke,
+        build_before_up=build_before_up,
+        force_recreate=force_recreate,
+        attached=attached,
+        follow=follow,
+        tail=tail,
+        no_cache=no_cache,
+        parallel=parallel,
+        verbose=verbose,
     )
 
     try:
@@ -936,23 +943,21 @@ def configure(
         None, "--set", "-s", help="Set KEY=VALUE in .env.", metavar="KEY=VALUE"
     ),
     interactive: bool = typer.Option(
-        False, "--interactive", "-i",
-        help="Interactively prompt for user-required variables."
+        False, "--interactive", "-i", help="Interactively prompt for user-required variables."
     ),
 ) -> None:
     """
     Update variables in an existing .env without regenerating secrets.
 
     Examples:\n
-      entities-dev configure --set HF_TOKEN=hf_abc123\n
-      entities-dev configure --set VLLM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct\n
-      entities-dev configure --interactive\n
+      platform configure --set HF_TOKEN=hf_abc123\n
+      platform configure --set VLLM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct\n
+      platform configure --interactive\n
     """
     env_path = Path(Orchestrator._ENV_FILE)
     if not env_path.exists():
         typer.echo(
-            f"[error] '{Orchestrator._ENV_FILE}' not found. "
-            "Run 'entities-dev --mode up' first.",
+            f"[error] '{Orchestrator._ENV_FILE}' not found. " "Run 'platform --mode up' first.",
             err=True,
         )
         raise SystemExit(1)
@@ -982,15 +987,15 @@ def configure(
             )
             if value.strip():
                 updates[key] = value.strip()
-                typer.echo(f"  ✓ {key} will be updated.\n")
+                typer.echo(f"  {key} will be updated.\n")
             else:
-                typer.echo(f"  — {key} unchanged.\n")
+                typer.echo(f"  {key} unchanged.\n")
         typer.echo("=" * 60 + "\n")
 
     if not updates:
         typer.echo(
             "Nothing to update. Use --set KEY=VALUE or --interactive.\n"
-            "Example: entities-dev configure --set HF_TOKEN=hf_abc123"
+            "Example: platform configure --set HF_TOKEN=hf_abc123"
         )
         raise SystemExit(0)
 
@@ -1005,29 +1010,29 @@ def configure(
         if pattern.search(content):
             content = pattern.sub(new_line, content)
         else:
-            content += f"\n# Added by configure\n{new_line}\n"
+            content += f"\n# Added by platform configure\n{new_line}\n"
 
     env_path.write_text(content, encoding="utf-8")
-    typer.echo(f"✓ {len(updates)} variable(s) updated: {', '.join(updates.keys())}")
+    typer.echo(f"Updated {len(updates)} variable(s): {', '.join(updates.keys())}")
 
     dangerous = [k for k in updates if k in Orchestrator._DANGEROUS_ROTATION]
     requires_down = [k for k in updates if k in Orchestrator._REQUIRES_DOWN]
 
     if dangerous:
         typer.echo(
-            f"\n⚠️  WARNING: {', '.join(dangerous)} cannot be safely rotated on a live stack.\n"
-            "   Back up your data, then:\n"
-            "     entities-dev --down --clear-volumes\n"
-            "     entities-dev --mode up"
+            f"\nWARNING: {', '.join(dangerous)} cannot be safely rotated on a live stack.\n"
+            "  Back up your data, then:\n"
+            "    platform --down --clear-volumes\n"
+            "    platform --mode up"
         )
     elif requires_down:
         typer.echo(
             f"\n  Note: {', '.join(requires_down)} require a full restart:\n"
-            "    entities-dev --down\n"
-            "    entities-dev --mode up"
+            "    platform --down\n"
+            "    platform --mode up"
         )
     else:
-        typer.echo("\n  Restart to apply: entities-dev --mode up --force-recreate")
+        typer.echo("\n  Restart to apply: platform --mode up --force-recreate")
 
 
 @app.command(name="bootstrap-admin")
@@ -1040,9 +1045,9 @@ def bootstrap_admin(
     """
     Run bootstrap_admin.py inside the running api container.
 
-    Provisions the default admin user. Stack must be running first.
-    Copy any printed ADMIN_API_KEY — you will need it for create-user
-    and setup-assistant.
+    Provisions the default admin user. The stack must be running first.
+    Copy any printed ADMIN_API_KEY — it is required for create-user and
+    setup-assistant.
     """
     args = SimpleNamespace(verbose=verbose, gpu=False)
     o = Orchestrator(args)
@@ -1081,7 +1086,7 @@ def setup_assistant(
     Requires admin API key and user ID from a completed bootstrap-admin run.
 
     Example:\n
-      entities-dev setup-assistant --api-key ad_... --user-id usr_...
+      platform setup-assistant --api-key ad_... --user-id usr_...
     """
     args = SimpleNamespace(verbose=verbose, gpu=False)
     o = Orchestrator(args)
@@ -1091,14 +1096,12 @@ def setup_assistant(
 # ---------------------------------------------------------------------------
 # Package structure note
 # ---------------------------------------------------------------------------
-# For `importlib.resources` to resolve bundled compose files, the package
-# directory `projectdavid_platform/` must exist and contain:
+# For importlib.resources to resolve bundled compose files, the package
+# directory projectdavid_platform/ must exist and contain:
 #   - __init__.py
 #   - docker-compose.yml
 #   - docker-compose.gpu.yml
 #   - .env.example
-#
-# See pyproject.toml [tool.setuptools.package-data] for the manifest.
 # ---------------------------------------------------------------------------
 
 
