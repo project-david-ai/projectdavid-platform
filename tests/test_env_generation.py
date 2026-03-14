@@ -43,11 +43,11 @@ class TestSecretUniqueness:
     ):
         secrets = []
         for i in range(2):
-            env_file = tmp_path / f".env.{i}"
+
             o = make_orchestrator()
             monkeypatch.setattr(o, "_prompt_user_required", lambda ev, gl: None)
             env_values = dict(o._DEFAULT_VALUES)
-            generation_log = {}
+
             for key in o._GENERATED_SECRETS:
                 import secrets as _secrets
 
@@ -62,7 +62,6 @@ class TestSecretUniqueness:
     def test_all_generated_secrets_are_unique_within_one_install(self, orchestrator, monkeypatch):
         monkeypatch.setattr(orchestrator, "_prompt_user_required", lambda ev, gl: None)
         env_values = dict(orchestrator._DEFAULT_VALUES)
-        generation_log = {}
 
         import secrets as _secrets
 
