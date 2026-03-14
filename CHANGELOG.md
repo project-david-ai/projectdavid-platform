@@ -1,3 +1,10 @@
+# [1.10.0](https://github.com/project-david-ai/platform-docker/compare/v1.9.1...v1.10.0) (2026-03-14)
+
+
+### Features
+
+* expand README with API architecture, usage, and SDK documentation ([a78046c](https://github.com/project-david-ai/platform-docker/commit/a78046cd290e16a4b415ef3dcfc83c3021a10b96))
+
 ## [1.9.1](https://github.com/project-david-ai/platform-docker/compare/v1.9.0...v1.9.1) (2026-03-14)
 
 
