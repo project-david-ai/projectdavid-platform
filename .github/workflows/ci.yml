@@ -1,4 +1,4 @@
-name: Lint & Version Orchestration Layer
+name: Lint, Release & Publish
 
 on:
   push:
@@ -10,19 +10,22 @@ permissions:
   contents: write
 
 jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Lint
+  # ──────────────────────────────────────────────────────────────────────────
   lint:
-    name: 🧹 Lint Orchestration Scripts & Compose Files
+    name: Lint Orchestration Scripts & Compose Files
     runs-on: ubuntu-latest
     steps:
-      - name: 🧾 Checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: 🐍 Set up Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 📦 Cache pip dependencies
+      - name: Cache pip dependencies
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
@@ -30,41 +33,48 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-lint-
 
-      - name: 🔧 Install tools and project dependencies
+      - name: Install tools and project dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
           pip install ruff==0.4.0 black
 
-      - name: ✨ Run Ruff Linter
+      - name: Run Ruff Linter
         run: ruff check . --output-format=github
 
-      - name: ⚫️ Run Black Formatter Check
+      - name: Run Black Formatter Check
         run: black --check .
 
-      - name: 🐳 Validate Compose Files
+      - name: Validate Compose Files
         run: |
           docker compose -f docker-compose.yml config --quiet --no-interpolate
           docker compose -f docker-compose.yml -f docker-compose.gpu.yml config --quiet --no-interpolate
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # Release — semantic versioning and changelog
+  # ──────────────────────────────────────────────────────────────────────────
   release:
-    name: 🚀 Git Version & Changelog
+    name: Git Version & Changelog
     runs-on: ubuntu-latest
     needs: lint
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    outputs:
+      # Expose the new version tag so the publish job can use it
+      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
+      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
     steps:
-      - name: 🧾 Checkout repository with full history
+      - name: Checkout repository with full history
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: 🚀 Setup Node.js for semantic-release
+      - name: Setup Node.js for semantic-release
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: 🔧 Install semantic-release
+      - name: Install semantic-release
         run: |
           npm install -g semantic-release \
             @semantic-release/commit-analyzer \
@@ -74,7 +84,48 @@ jobs:
             @semantic-release/git \
             @semantic-release/github
 
-      - name: 🚀 Run semantic-release
+      - name: Run semantic-release
+        id: semantic
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx semantic-release
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Publish — build wheel and push to PyPI
+  # Only runs when semantic-release actually cut a new release
+  # ──────────────────────────────────────────────────────────────────────────
+  publish:
+    name: Build & Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: release
+    if: needs.release.outputs.new_release_published == 'true'
+
+    steps:
+      - name: Checkout repository at new release tag
+        uses: actions/checkout@v4
+        with:
+          # Check out the tag that semantic-release just pushed so
+          # the version in pyproject.toml is already bumped
+          ref: v${{ needs.release.outputs.new_release_version }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build tools
+        run: |
+          pip install --upgrade pip
+          pip install build twine
+
+      - name: Build wheel and source distribution
+        run: python -m build
+
+      - name: Verify distribution contents
+        run: twine check dist/*
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: twine upload dist/*
