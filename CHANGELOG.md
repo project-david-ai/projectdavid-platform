@@ -1,3 +1,10 @@
+# [1.15.0](https://github.com/project-david-ai/platform-docker/compare/v1.14.1...v1.15.0) (2026-03-15)
+
+
+### Features
+
+* enhance Docker orchestration with new services and improved configs ([f20dd84](https://github.com/project-david-ai/platform-docker/commit/f20dd848d7e14c5ee55228f652ac5fd53d39ea0d))
+
 ## [1.14.1](https://github.com/project-david-ai/platform-docker/compare/v1.14.0...v1.14.1) (2026-03-15)
 
 
