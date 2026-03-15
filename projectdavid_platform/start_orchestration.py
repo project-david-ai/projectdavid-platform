@@ -81,13 +81,13 @@ API_SERVICE_NAME = "api"
 API_CONTAINER_NAME = "fastapi_cosmic_catalyst"
 BASE_COMPOSE_FILE = "docker-compose.yml"
 GPU_COMPOSE_FILE = "docker-compose.gpu.yml"
-OLLAMA_COMPOSE_FILE = "docker-docker-compose.ollama.yml"
+OLLAMA_COMPOSE_FILE = "docker-compose.ollama.yml"
 VLLM_COMPOSE_FILE = "docker-compose.vllm.yml"
 PACKAGE_NAME = "projectdavid_platform"
 
 _BUNDLED_CONFIGS = [
     ("docker-compose.yml", "docker-compose.yml"),
-    ("docker-docker-compose.ollama.yml", "docker-docker-compose.ollama.yml"),
+    ("docker-compose.ollama.yml", "docker-compose.ollama.yml"),
     ("docker-compose.vllm.yml", "docker-compose.vllm.yml"),
     ("docker-compose.gpu.yml", "docker-compose.gpu.yml"),
     ("docker/nginx/nginx.conf", "docker/nginx/nginx.conf"),
@@ -397,7 +397,7 @@ class Orchestrator:
 
         # Version mismatch — user has upgraded via pip.
         typer.echo("\n" + "=" * 60)
-        typer.echo(f"  Platform update detected")
+        typer.echo("  Platform update detected")
         typer.echo("=" * 60)
         typer.echo(f"  Installed : {installed}")
         typer.echo(f"  Running   : {env_version}")
