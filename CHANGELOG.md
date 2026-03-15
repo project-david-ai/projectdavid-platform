@@ -1,3 +1,17 @@
+# [1.17.0](https://github.com/project-david-ai/platform-docker/compare/v1.16.0...v1.17.0) (2026-03-15)
+
+
+### Bug Fixes
+
+* restore correct gpu overlay — wrong file was committed ([1d53c4f](https://github.com/project-david-ai/platform-docker/commit/1d53c4f963106b824c48fdea24508c17351bed0c))
+* streamline and enhance docker-compose configuration ([b68dff1](https://github.com/project-david-ai/platform-docker/commit/b68dff1588e77abe511c2af8a6de6bc82dd92de6))
+
+
+### Features
+
+* enhance Docker stack with expanded services and GPU improvements ([e046e46](https://github.com/project-david-ai/platform-docker/commit/e046e4682da7828160a9012dda5ac3064588e675))
+* simplify GPU orchestration by integrating ollama and vLLM services ([7016807](https://github.com/project-david-ai/platform-docker/commit/70168072c9f4468aedb42507b67b0362a88d178d))
+
 # [1.16.0](https://github.com/project-david-ai/platform-docker/compare/v1.15.0...v1.16.0) (2026-03-15)
 
 
