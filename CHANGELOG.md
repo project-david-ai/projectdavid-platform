@@ -1,3 +1,10 @@
+## [1.12.1](https://github.com/project-david-ai/platform-docker/compare/v1.12.0...v1.12.1) (2026-03-15)
+
+
+### Bug Fixes
+
+* clean up comments and formatting in `docker-compose.yml` ([5816b0b](https://github.com/project-david-ai/platform-docker/commit/5816b0bef6d1698731fc717e8b09943ae4126a21))
+
 # [1.12.0](https://github.com/project-david-ai/platform-docker/compare/v1.11.0...v1.12.0) (2026-03-14)
 
 
