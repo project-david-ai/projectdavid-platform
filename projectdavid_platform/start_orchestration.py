@@ -15,6 +15,7 @@
 #
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.resources
 import logging
 import os
@@ -98,6 +99,19 @@ _DOCKER_COMPOSE_INSTALL_URL = "https://docs.docker.com/compose/install/"
 _NVIDIA_TOOLKIT_INSTALL_URL = (
     "https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
 )
+
+# Maps compose service name -> container name for the container version check.
+# Only owned images are checked — third-party images are skipped entirely.
+_OWNED_SERVICES = {
+    "api": API_CONTAINER_NAME,
+    "sandbox": "sandbox_api",
+}
+
+# Docker Hub repository names matching the owned services above.
+_OWNED_IMAGES = {
+    "api": "thanosprime/entities-api-api",
+    "sandbox": "thanosprime/entities-api-sandbox",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +330,7 @@ class Orchestrator:
             "TOOL_VECTOR_STORE_SEARCH",
         ],
         "Other": [
+            "PDAVID_VERSION",
             "LOG_LEVEL",
             "PYTHONUNBUFFERED",
         ],
@@ -337,11 +352,6 @@ class Orchestrator:
         if getattr(self.args, "verbose", False):
             self.log.setLevel(logging.DEBUG)
 
-        # _ensure_config_files MUST run before _resolve_compose_file and
-        # _load_compose_config. Docker Compose will race to create volume
-        # mount targets as empty directories if the files don't exist yet —
-        # running this first guarantees the actual files are in place before
-        # any Docker operation can win that race.
         self._ensure_config_files()
 
         self.base_compose = _resolve_compose_file(BASE_COMPOSE_FILE)
@@ -358,11 +368,6 @@ class Orchestrator:
 
     @property
     def _env_file_abs(self) -> str:
-        """
-        Absolute path to the .env file in the current working directory.
-        Always resolves from CWD so Docker Compose receives a fully-qualified
-        path regardless of where the bundled compose file lives.
-        """
         return str(Path(self._ENV_FILE).resolve())
 
     # ------------------------------------------------------------------
@@ -370,32 +375,12 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def _ensure_config_files(self) -> None:
-        """
-        Copy bundled service config files (nginx, otel, searxng) into the
-        user's CWD before Docker Compose starts.
-
-        Rules:
-        - Runs first in __init__ to win the race against Docker Compose, which
-          will autocreate volume mount targets as empty directories if the
-          files don't exist at startup time.
-        - If Docker already won a previous race and created a directory where
-          a file should be, the directory is removed and replaced with the
-          correct file. A warning is printed so the user is aware.
-        - Never overwrites an existing *file* — local customisations are
-          always respected.
-        - Skips silently if the package data cannot be located (e.g. a
-          partial or editable install without the data files present).
-        - Creates the full directory tree as needed.
-        """
         copied = []
         skipped = []
 
         for pkg_rel, cwd_rel in _BUNDLED_CONFIGS:
             dest = Path.cwd() / cwd_rel
 
-            # Docker Compose race condition: if a previous run started before
-            # this file existed, Docker will have created an empty directory
-            # at the mount target path. Detect and replace it with the real file.
             if dest.exists() and dest.is_dir():
                 self.log.warning(
                     "Found a directory at '%s' — Docker created it before the config "
@@ -711,6 +696,16 @@ class Orchestrator:
             )
             generation_log["HF_CACHE_PATH"] = f"Auto-resolved for {_platform.system()}"
 
+        # Resolve and pin the package version so the compose file can resolve
+        # ${PDAVID_VERSION} to the correctly tagged owned images automatically.
+        try:
+            pkg_version = importlib.metadata.version("projectdavid-platform")
+            env_values["PDAVID_VERSION"] = pkg_version
+            generation_log["PDAVID_VERSION"] = "Auto-resolved from installed package"
+        except importlib.metadata.PackageNotFoundError:
+            env_values["PDAVID_VERSION"] = "latest"
+            generation_log["PDAVID_VERSION"] = "Package not found — defaulting to latest"
+
         self._prompt_user_required(env_values, generation_log)
 
         env_lines = [
@@ -833,7 +828,72 @@ class Orchestrator:
                 )
 
     # ------------------------------------------------------------------
-    # Container checks
+    # Container version check
+    # ------------------------------------------------------------------
+
+    def _check_container_versions(self) -> None:
+        """
+        Compare running container image tags against what the installed package
+        version expects. Prints a non-blocking notice if any owned container
+        is behind.
+
+        Rules:
+        - Only checks owned images (api, sandbox) — skips all third-party images.
+        - Never pulls from Docker Hub — tag comparison only, works air-gapped.
+        - Swallows all exceptions silently — never blocks startup.
+        - Skipped entirely if PDAVID_NO_UPDATE_CHECK=1 is set.
+        """
+        if os.environ.get("PDAVID_NO_UPDATE_CHECK", "").strip() == "1":
+            return
+
+        try:
+            pkg_version = importlib.metadata.version("projectdavid-platform")
+        except importlib.metadata.PackageNotFoundError:
+            return  # can't determine expected version — skip silently
+
+        try:
+            stale = []
+
+            for svc_name, container_name in _OWNED_SERVICES.items():
+                expected_image = f"{_OWNED_IMAGES[svc_name]}:{pkg_version}"
+
+                result = self._run_command(
+                    [
+                        "docker",
+                        "inspect",
+                        container_name,
+                        "--format",
+                        "{{.Config.Image}}",
+                    ],
+                    capture_output=True,
+                    check=False,
+                    suppress_logs=True,
+                )
+
+                if result.returncode != 0:
+                    continue  # container not running — skip quietly
+
+                running_image = result.stdout.strip()
+
+                if running_image and running_image != expected_image:
+                    stale.append((svc_name, running_image, expected_image))
+
+            if stale:
+                typer.echo("\n" + "=" * 60)
+                typer.echo("  Container update available")
+                typer.echo("=" * 60)
+                for svc, running, expected in stale:
+                    typer.echo(f"  {svc:<10} running : {running}")
+                    typer.echo(f"  {'':10} current : {expected}")
+                typer.echo(
+                    "\n  To apply:\n" "    pdavid --mode up --force-recreate\n" + "=" * 60 + "\n"
+                )
+
+        except Exception:
+            pass  # version check must never crash startup
+
+    # ------------------------------------------------------------------
+    # Container running checks
     # ------------------------------------------------------------------
 
     def _is_container_running(self, container_name: str) -> bool:
@@ -855,6 +915,7 @@ class Orchestrator:
     def _handle_up(self):
         load_dotenv(dotenv_path=self._ENV_FILE, override=True)
         self._validate_secrets()
+        self._check_container_versions()
 
         up_cmd = ["docker", "compose"] + self._compose_files() + ["up"]
         if not getattr(self.args, "attached", False):
