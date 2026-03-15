@@ -4,10 +4,10 @@ services:
     container_name: my_mysql_cosmic_catalyst
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is not set. Run: entities-dev --mode up}"
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is not set. Run: pdavid --mode up}"
       MYSQL_DATABASE: entities_db
       MYSQL_USER: api_user
-      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?MYSQL_PASSWORD is not set. Run: entities-dev --mode up}"
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?MYSQL_PASSWORD is not set. Run: pdavid --mode up}"
     volumes:
       - mysql_data:/var/lib/mysql
     ports:
@@ -69,7 +69,7 @@ services:
       - ./docker/searxng:/etc/searxng
     environment:
       - SEARXNG_BASE_URL=http://localhost:8080/
-      - "SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:?SEARXNG_SECRET_KEY is not set. Run: entities-dev --mode up}"
+      - "SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:?SEARXNG_SECRET_KEY is not set. Run: pdavid --mode up}"
     depends_on:
       - redis
     networks:
@@ -105,6 +105,8 @@ services:
   api:
     # Pre-built image from Docker Hub — do not add build: context here.
     # To build from source use the entities_api dev repo instead.
+    # Scripts (bootstrap_admin.py, create_user.py etc.) are baked into the
+    # image at /app/scripts — do NOT mount a local scripts directory over them.
     image: thanosprime/entities-api-api:latest
     container_name: fastapi_cosmic_catalyst
     restart: always
@@ -117,7 +119,7 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - REDIS_URL=redis://redis:6379/0
       - BROWSER_WS_ENDPOINT=ws://browser:3000
-      - "DEFAULT_SECRET_KEY=${DEFAULT_SECRET_KEY:?DEFAULT_SECRET_KEY is not set. Run: entities-dev --mode up}"
+      - "DEFAULT_SECRET_KEY=${DEFAULT_SECRET_KEY:?DEFAULT_SECRET_KEY is not set. Run: pdavid --mode up}"
       - SEARXNG_URL=http://searxng:8080
       - OTEL_SERVICE_NAME=entities-api
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
@@ -131,7 +133,6 @@ services:
     ports:
       - "9000:9000"
     volumes:
-      - ./scripts:/app/scripts
       - "${SHARED_PATH:-./shared_data}:/app/shared_data"
     depends_on:
       db:
@@ -182,7 +183,7 @@ services:
       USERID: ${SAMBA_USERID:-1000}
       GROUPID: ${SAMBA_GROUPID:-1000}
       TZ: UTC
-      USER: "samba_user;${SMBCLIENT_PASSWORD:?SMBCLIENT_PASSWORD is not set. Run: entities-dev --mode up}"
+      USER: "samba_user;${SMBCLIENT_PASSWORD:?SMBCLIENT_PASSWORD is not set. Run: pdavid --mode up}"
       SHARE: "cosmic_share;/samba/share;yes;no;no;samba_user"
       GLOBAL: |
         server min protocol = NT1
