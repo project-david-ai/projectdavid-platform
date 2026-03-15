@@ -84,6 +84,7 @@ GPU_COMPOSE_FILE = "docker-compose.gpu.yml"
 OLLAMA_COMPOSE_FILE = "docker-compose.ollama.yml"
 VLLM_COMPOSE_FILE = "docker-compose.vllm.yml"
 PACKAGE_NAME = "projectdavid_platform"
+CHANGELOG_URL = "https://github.com/project-david-ai/platform/blob/master/CHANGELOG.md"
 
 _BUNDLED_CONFIGS = [
     ("docker-compose.yml", "docker-compose.yml"),
@@ -374,11 +375,14 @@ class Orchestrator:
         Compare the installed package version against PDAVID_VERSION in .env.
 
         If they differ the user has upgraded via pip since the last run.
-        Prints a notice and updates PDAVID_VERSION in .env so the notice
-        only fires once per upgrade.
+        Prints a notice with a changelog link and updates PDAVID_VERSION in
+        .env so the notice only fires once per upgrade.
 
         Never pulls images automatically — the user decides when to apply
         the update via: pdavid --mode up --pull
+
+        The compose file always uses :latest so no image tag coupling exists.
+        PDAVID_VERSION in .env is used solely for this notice.
         """
         try:
             installed = importlib.metadata.version("projectdavid-platform")
@@ -403,6 +407,7 @@ class Orchestrator:
         typer.echo(f"  Running   : {env_version}")
         typer.echo(
             "\n  New features and fixes are available.\n"
+            f"  What's new: {CHANGELOG_URL}\n\n"
             "  To apply the update and pull the latest container images:\n\n"
             "    pdavid --mode up --pull\n\n"
             "  Your data and secrets are not affected.\n"
@@ -554,7 +559,6 @@ class Orchestrator:
         if not self._has_docker_compose():
             return False
 
-        # Check GPU prereqs for any GPU flag that is set.
         gpu = getattr(self.args, "gpu", False)
         ollama = getattr(self.args, "ollama", False)
         vllm = getattr(self.args, "vllm", False)
@@ -597,7 +601,6 @@ class Orchestrator:
         vllm = getattr(self.args, "vllm", False)
 
         if gpu:
-            # Convenience flag — includes both services.
             files += ["-f", self.gpu_compose]
         else:
             if ollama:
@@ -781,6 +784,8 @@ class Orchestrator:
             )
             generation_log["HF_CACHE_PATH"] = f"Auto-resolved for {_platform.system()}"
 
+        # PDAVID_VERSION is stored in .env solely to power the upgrade notice.
+        # It is NOT used to pin image tags — the compose file always uses :latest.
         try:
             env_values["PDAVID_VERSION"] = importlib.metadata.version("projectdavid-platform")
             generation_log["PDAVID_VERSION"] = "Auto-resolved from installed package"
