@@ -298,7 +298,7 @@ pdavid create-user --email user@example.com --name "Alice"
 pdavid setup-assistant --api-key ad_... --user-id usr_...
 ```
 
-Full provisioning walkthrough: [`docs/boot_strap.md`](docs/boot_strap.md)
+Full documentation [here](https://github.com/project-david-ai/projectdavid_docs/blob/master/src/pages/projectdavid-platform/projectdavid-platform-commands.md)
 
 ---
 
