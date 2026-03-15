@@ -1,0 +1,48 @@
+# docker-compose.ollama.yml
+#
+# Ollama opt-in overlay — local LLM inference via Ollama.
+# Can be used independently of vLLM.
+#
+# USAGE:
+#   pdavid --mode up --ollama
+#
+# Or manually:
+#   docker compose -f docker-compose.yml -f docker-compose.ollama.yml up -d
+#
+# REQUIREMENTS:
+#   - NVIDIA GPU with drivers installed
+#   - NVIDIA Container Toolkit (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks:
+      - my_custom_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Override api to point at the real Ollama internal URL
+  # instead of the localhost stub in the base compose file.
+  api:
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434/v1
+    depends_on:
+      ollama:
+        condition: service_started
+
+volumes:
+  ollama_data:

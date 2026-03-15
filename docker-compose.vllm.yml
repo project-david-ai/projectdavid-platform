@@ -1,46 +1,24 @@
-# docker-compose.gpu.yml
+# docker-compose.vllm.yml
 #
-# GPU convenience overlay — starts both Ollama and vLLM together.
-# Equivalent to using --ollama and --vllm simultaneously.
+# vLLM opt-in overlay — high-throughput GPU inference via vLLM.
+# Can be used independently of Ollama.
 #
 # USAGE:
-#   pdavid --mode up --gpu
-#
-# To start only one GPU service:
-#   pdavid --mode up --ollama
 #   pdavid --mode up --vllm
 #
 # Or manually:
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.vllm.yml up -d
 #
 # REQUIREMENTS:
 #   - NVIDIA GPU with drivers installed
 #   - NVIDIA Container Toolkit (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
 #   - HF_TOKEN set in .env (for gated model downloads)
 #   - HF_CACHE_PATH set in .env (auto-resolved by pdavid on first run)
+#
+# To set HF_TOKEN after initial setup:
+#   pdavid configure --set HF_TOKEN=hf_abc123
 
 services:
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    restart: unless-stopped
-    runtime: nvidia
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-    volumes:
-      - ollama_data:/root/.ollama
-    ports:
-      - "11434:11434"
-    networks:
-      - my_custom_network
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-
   vllm:
     image: vllm/vllm-openai:latest
     container_name: vllm_server
@@ -48,8 +26,13 @@ services:
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      # HF_TOKEN is optional — stack starts without it but gated model
+      # downloads will fail. Set via: pdavid configure --set HF_TOKEN=hf_abc123
       - HF_TOKEN=${HF_TOKEN}
     volumes:
+      # HF_CACHE_PATH uses :- fallback to avoid multi-colon parse error in volume syntax.
+      # The orchestrator always sets this before starting — fallback only fires if
+      # docker compose up is run directly without going through pdavid.
       - "${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface"
     ports:
       - "8001:8000"
@@ -69,16 +52,11 @@ services:
               count: all
               capabilities: [gpu]
 
-  # Override api to point at both real GPU service URLs.
+  # Override api to point at the real vLLM internal URL
+  # instead of the localhost stub in the base compose file.
   api:
     environment:
-      - OLLAMA_BASE_URL=http://ollama:11434/v1
       - VLLM_BASE_URL=http://vllm_server:8000
     depends_on:
-      ollama:
-        condition: service_started
       vllm:
         condition: service_started
-
-volumes:
-  ollama_data:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "projectdavid-platform"
-version = "1.17.0"
+version = "1.8.0"
 description = "Deployment orchestrator for the Project David / Entities platform"
 readme = "README.md"
 authors = [
@@ -33,15 +33,12 @@ dev = [
   "twine",
 ]
 
-# -------------------------------------------------------------------------
-# Bundle all runtime assets so they are available after pip install without
-# any repository clone. _ensure_config_files in start_orchestration.py
-# copies these to the user's CWD on first run.
-# -------------------------------------------------------------------------
 [tool.setuptools.package-data]
 "projectdavid_platform" = [
   "docker-compose.yml",
   "docker-compose.gpu.yml",
+  "docker-compose.ollama.yml",
+  "docker-compose.vllm.yml",
   ".env.example",
   "docker/nginx/nginx.conf",
   "docker/otel/otel-config.yaml",

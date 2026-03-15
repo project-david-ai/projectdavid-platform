@@ -1,11 +1,14 @@
 # docker-compose.gpu.yml
 #
-# GPU service overrides — opt-in extension for users with NVIDIA hardware.
-# Adds ollama and vLLM to the stack and overrides the api service to point
-# at their real internal URLs instead of the localhost stubs in the base file.
+# GPU convenience overlay — starts both Ollama and vLLM together.
+# Equivalent to using --ollama and --vllm simultaneously.
 #
 # USAGE:
 #   pdavid --mode up --gpu
+#
+# To start only one GPU service:
+#   pdavid --mode up --ollama
+#   pdavid --mode up --vllm
 #
 # Or manually:
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
@@ -15,9 +18,6 @@
 #   - NVIDIA Container Toolkit (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
 #   - HF_TOKEN set in .env (for gated model downloads)
 #   - HF_CACHE_PATH set in .env (auto-resolved by pdavid on first run)
-#
-# To set HF_TOKEN after initial setup:
-#   pdavid configure --set HF_TOKEN=hf_abc123
 
 services:
   ollama:
@@ -48,13 +48,8 @@ services:
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
-      # HF_TOKEN is optional — stack starts without it but gated model
-      # downloads will fail. Set via: pdavid configure --set HF_TOKEN=hf_abc123
       - HF_TOKEN=${HF_TOKEN}
     volumes:
-      # HF_CACHE_PATH uses :- fallback to avoid multi-colon parse error in volume syntax.
-      # The orchestrator always sets this before starting — fallback only fires if
-      # docker compose up is run directly without going through pdavid.
       - "${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface"
     ports:
       - "8001:8000"
@@ -74,8 +69,7 @@ services:
               count: all
               capabilities: [gpu]
 
-  # Override api service to point at the real GPU service URLs
-  # instead of the localhost stubs in the base compose file.
+  # Override api to point at both real GPU service URLs.
   api:
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434/v1

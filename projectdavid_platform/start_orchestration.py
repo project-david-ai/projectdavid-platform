@@ -5,9 +5,11 @@
 #
 # After `pip install projectdavid-platform`:
 #   pdavid --mode up
-#   pdavid --mode up --gpu
+#   pdavid --mode up --ollama          # Ollama only
+#   pdavid --mode up --vllm            # vLLM only
+#   pdavid --mode up --gpu             # Both Ollama + vLLM
 #   pdavid --mode up --pull
-#   pdavid --mode up --exclude vllm --exclude ollama
+#   pdavid --mode up --exclude samba
 #   pdavid --mode up --services api db qdrant
 #   pdavid --mode logs --follow
 #   pdavid configure --set HF_TOKEN=hf_abc123
@@ -79,10 +81,15 @@ API_SERVICE_NAME = "api"
 API_CONTAINER_NAME = "fastapi_cosmic_catalyst"
 BASE_COMPOSE_FILE = "docker-compose.yml"
 GPU_COMPOSE_FILE = "docker-compose.gpu.yml"
+OLLAMA_COMPOSE_FILE = "docker-docker-compose.ollama.yml"
+VLLM_COMPOSE_FILE = "docker-compose.vllm.yml"
 PACKAGE_NAME = "projectdavid_platform"
 
 _BUNDLED_CONFIGS = [
     ("docker-compose.yml", "docker-compose.yml"),
+    ("docker-docker-compose.ollama.yml", "docker-docker-compose.ollama.yml"),
+    ("docker-compose.vllm.yml", "docker-compose.vllm.yml"),
+    ("docker-compose.gpu.yml", "docker-compose.gpu.yml"),
     ("docker/nginx/nginx.conf", "docker/nginx/nginx.conf"),
     ("docker/otel/otel-config.yaml", "docker/otel/otel-config.yaml"),
     ("docker/searxng/settings.yml", "docker/searxng/settings.yml"),
@@ -142,12 +149,13 @@ app = typer.Typer(
     name="pdavid",
     help=(
         "Deployment orchestrator for the Project David / Entities platform.\n\n"
-        "Install:  pip install projectdavid-platform\n"
-        "Start:    pdavid --mode up\n"
-        "Update:   pdavid --mode up --pull\n"
-        "GPU:      pdavid --mode up --gpu\n"
-        "Skip svc: pdavid --mode up --exclude vllm --exclude ollama\n"
-        "Config:   pdavid configure --set HF_TOKEN=hf_abc123"
+        "Install:   pip install projectdavid-platform\n"
+        "Start:     pdavid --mode up\n"
+        "Update:    pdavid --mode up --pull\n"
+        "Ollama:    pdavid --mode up --ollama\n"
+        "vLLM:      pdavid --mode up --vllm\n"
+        "Both GPU:  pdavid --mode up --gpu\n"
+        "Config:    pdavid configure --set HF_TOKEN=hf_abc123"
     ),
     add_completion=False,
 )
@@ -341,6 +349,8 @@ class Orchestrator:
 
         self.base_compose = _resolve_compose_file(BASE_COMPOSE_FILE)
         self.gpu_compose = _resolve_compose_file(GPU_COMPOSE_FILE)
+        self.ollama_compose = _resolve_compose_file(OLLAMA_COMPOSE_FILE)
+        self.vllm_compose = _resolve_compose_file(VLLM_COMPOSE_FILE)
         self.compose_config = self._load_compose_config()
         self._check_for_required_env_file()
         self._configure_shared_path()
@@ -364,9 +374,11 @@ class Orchestrator:
         Compare the installed package version against PDAVID_VERSION in .env.
 
         If they differ the user has upgraded via pip since the last run.
-        Print a clear notice and update PDAVID_VERSION in .env so the notice
-        only fires once per upgrade. Never pulls automatically — the user
-        decides when to apply the update.
+        Prints a notice and updates PDAVID_VERSION in .env so the notice
+        only fires once per upgrade.
+
+        Never pulls images automatically — the user decides when to apply
+        the update via: pdavid --mode up --pull
         """
         try:
             installed = importlib.metadata.version("projectdavid-platform")
@@ -376,14 +388,14 @@ class Orchestrator:
         env_version = os.environ.get("PDAVID_VERSION", "").strip()
 
         if not env_version:
-            # First run — just write the version, no notice needed.
+            # First run — write the version silently, no notice needed.
             self._write_pdavid_version(installed)
             return
 
         if env_version == installed:
             return
 
-        # Version mismatch — user has upgraded.
+        # Version mismatch — user has upgraded via pip.
         typer.echo("\n" + "=" * 60)
         typer.echo("  Platform update detected")
         typer.echo("=" * 60)
@@ -462,7 +474,6 @@ class Orchestrator:
             except Exception as e:
                 self.log.warning(
                     "Could not install bundled config '%s': %s. "
-                    "The service that depends on it may fail to start. "
                     "Reinstall with: pip install --force-reinstall projectdavid-platform",
                     cwd_rel,
                     e,
@@ -520,19 +531,18 @@ class Orchestrator:
         except (subprocess.CalledProcessError, FileNotFoundError):
             return False
 
-    def _validate_gpu_prereqs(self) -> bool:
+    def _validate_gpu_prereqs(self, flag: str) -> bool:
+        """Validate NVIDIA prereqs before starting any GPU service."""
         if self._has_nvidia_support():
             self.log.info("NVIDIA GPU support confirmed.")
             return True
         typer.echo(
-            "\nGPU stack requested (--gpu) but NVIDIA drivers / nvidia-smi not found.\n"
-            "Requirements for GPU stack:\n"
+            f"\nGPU service requested ({flag}) but NVIDIA drivers / nvidia-smi not found.\n"
+            "Requirements:\n"
             "  1. NVIDIA GPU with drivers installed\n"
             f"  2. NVIDIA Container Toolkit: {_NVIDIA_TOOLKIT_INSTALL_URL}\n"
-            "\nTo start without GPU services, omit --gpu:\n"
-            "  pdavid --mode up\n"
-            "Or exclude only the GPU services:\n"
-            "  pdavid --mode up --exclude vllm --exclude ollama\n",
+            "\nTo start without GPU services, omit the GPU flags:\n"
+            "  pdavid --mode up\n",
             err=True,
         )
         return False
@@ -543,8 +553,19 @@ class Orchestrator:
             return False
         if not self._has_docker_compose():
             return False
-        if getattr(self.args, "gpu", False) and not self._validate_gpu_prereqs():
+
+        # Check GPU prereqs for any GPU flag that is set.
+        gpu = getattr(self.args, "gpu", False)
+        ollama = getattr(self.args, "ollama", False)
+        vllm = getattr(self.args, "vllm", False)
+
+        if gpu and not self._validate_gpu_prereqs("--gpu"):
             return False
+        if ollama and not gpu and not self._validate_gpu_prereqs("--ollama"):
+            return False
+        if vllm and not gpu and not self._validate_gpu_prereqs("--vllm"):
+            return False
+
         self.log.debug("Preflight checks passed.")
         return True
 
@@ -553,6 +574,15 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def _compose_files(self) -> List[str]:
+        """
+        Build the compose file flag list for docker compose commands.
+
+        Flag behaviour:
+          --gpu    → base + gpu overlay (both ollama + vllm)
+          --ollama → base + ollama overlay only
+          --vllm   → base + vllm overlay only
+          (none)   → base only
+        """
         files = [
             "--project-directory",
             str(Path.cwd()),
@@ -561,8 +591,20 @@ class Orchestrator:
             "-f",
             self.base_compose,
         ]
-        if getattr(self.args, "gpu", False):
+
+        gpu = getattr(self.args, "gpu", False)
+        ollama = getattr(self.args, "ollama", False)
+        vllm = getattr(self.args, "vllm", False)
+
+        if gpu:
+            # Convenience flag — includes both services.
             files += ["-f", self.gpu_compose]
+        else:
+            if ollama:
+                files += ["-f", self.ollama_compose]
+            if vllm:
+                files += ["-f", self.vllm_compose]
+
         return files
 
     def _get_all_services(self) -> List[str]:
@@ -739,7 +781,6 @@ class Orchestrator:
             )
             generation_log["HF_CACHE_PATH"] = f"Auto-resolved for {_platform.system()}"
 
-        # Pin installed package version on first .env generation.
         try:
             env_values["PDAVID_VERSION"] = importlib.metadata.version("projectdavid-platform")
             generation_log["PDAVID_VERSION"] = "Auto-resolved from installed package"
@@ -1047,8 +1088,21 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def run(self):
+        gpu = getattr(self.args, "gpu", False)
+        ollama = getattr(self.args, "ollama", False)
+        vllm = getattr(self.args, "vllm", False)
         mode = getattr(self.args, "mode", "up")
-        self.log.info("Mode: %s%s", mode, " + GPU" if getattr(self.args, "gpu", False) else "")
+
+        suffix = ""
+        if gpu:
+            suffix = " + GPU (Ollama + vLLM)"
+        elif ollama and vllm:
+            suffix = " + Ollama + vLLM"
+        elif ollama:
+            suffix = " + Ollama"
+        elif vllm:
+            suffix = " + vLLM"
+        self.log.info("Mode: %s%s", mode, suffix)
 
         if getattr(self.args, "nuke", False):
             if not self._preflight():
@@ -1092,11 +1146,23 @@ def main(
         help="Stack action: up | build | both | down_only | logs",
         show_default=True,
     ),
+    # --- GPU service flags — independent opt-in ---
     gpu: bool = typer.Option(
         False,
         "--gpu",
-        help="Include GPU services (vLLM + Ollama) via docker-compose.gpu.yml.",
+        help="Start both Ollama and vLLM (convenience shorthand for --ollama --vllm).",
     ),
+    ollama: bool = typer.Option(
+        False,
+        "--ollama",
+        help="Start Ollama only. Requires NVIDIA GPU and nvidia-container-toolkit.",
+    ),
+    vllm: bool = typer.Option(
+        False,
+        "--vllm",
+        help="Start vLLM only. Requires NVIDIA GPU and nvidia-container-toolkit.",
+    ),
+    # --- Targeting ---
     services: Optional[List[str]] = typer.Option(
         None,
         "--services",
@@ -1106,8 +1172,9 @@ def main(
         None,
         "--exclude",
         "-x",
-        help="Exclude service(s) from 'up'. Repeat for multiple: --exclude vllm --exclude ollama",
+        help="Exclude service(s) from 'up'. Repeat for multiple: --exclude samba",
     ),
+    # --- Up ---
     down: bool = typer.Option(False, "--down", help="Run 'down' before starting."),
     clear_volumes: bool = typer.Option(
         False, "--clear-volumes", "-v", help="Remove volumes on down."
@@ -1122,13 +1189,16 @@ def main(
     ),
     attached: bool = typer.Option(False, "--attached", "-a", help="Run up in foreground."),
     build_before_up: bool = typer.Option(False, "--build-before-up", help="Build before up."),
+    # --- Build ---
     no_cache: bool = typer.Option(False, "--no-cache", help="Build without cache."),
     parallel: bool = typer.Option(False, "--parallel", help="Build images in parallel."),
+    # --- Nuke ---
     nuke: bool = typer.Option(
         False,
         "--nuke",
         help="DANGER: destroy all stack data. Requires confirmation.",
     ),
+    # --- Logs ---
     follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output."),
     tail: Optional[int] = typer.Option(None, "--tail", help="Number of log lines to show."),
     timestamps: bool = typer.Option(
@@ -1145,8 +1215,10 @@ def main(
     Examples:\n
       pdavid --mode up\n
       pdavid --mode up --pull\n
+      pdavid --mode up --ollama\n
+      pdavid --mode up --vllm\n
       pdavid --mode up --gpu\n
-      pdavid --mode up --exclude vllm --exclude ollama\n
+      pdavid --mode up --exclude samba\n
       pdavid --mode up --services api db qdrant\n
       pdavid --mode up --down --clear-volumes\n
       pdavid --mode logs --follow --timestamps\n
@@ -1185,6 +1257,8 @@ def main(
     args = SimpleNamespace(
         mode=mode,
         gpu=gpu,
+        ollama=ollama,
+        vllm=vllm,
         services=services or [],
         exclude=exclude or [],
         down=down,
@@ -1331,7 +1405,7 @@ def bootstrap_admin(
 
     Safe to re-run: existing users and keys are detected and left untouched.
     """
-    args = SimpleNamespace(verbose=verbose, gpu=False)
+    args = SimpleNamespace(verbose=verbose, gpu=False, ollama=False, vllm=False)
     o = Orchestrator(args)
     o.exec_bootstrap_admin(db_url=db_url)
 
