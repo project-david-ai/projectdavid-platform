@@ -4,14 +4,12 @@ services:
     container_name: my_mysql_cosmic_catalyst
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-default}
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is not set. Run: pdavid --mode up}"
       MYSQL_DATABASE: entities_db
       MYSQL_USER: api_user
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-default}
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?MYSQL_PASSWORD is not set. Run: pdavid --mode up}"
     volumes:
       - mysql_data:/var/lib/mysql
-    # Port 3307 kept for local tooling (DBeaver etc) via SPECIAL_DB_URL.
-    # Remove in production if host-level DB access is not needed.
     ports:
       - "3307:3306"
     healthcheck:
@@ -26,6 +24,9 @@ services:
     image: qdrant/qdrant:latest
     container_name: qdrant_server
     restart: always
+    ports:
+      - "6333:6333"
+      - "6334:6334"
     volumes:
       - qdrant_storage:/qdrant/storage
     environment:
@@ -39,6 +40,8 @@ services:
     image: redis:7
     container_name: redis
     restart: unless-stopped
+    ports:
+      - "6379:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -48,6 +51,8 @@ services:
     image: ghcr.io/browserless/chromium:latest
     container_name: browserless_chromium
     restart: always
+    ports:
+      - "3000:3000"
     environment:
       - MAX_CONCURRENT_SESSIONS=10
       - CONNECTION_TIMEOUT=60000
@@ -58,11 +63,13 @@ services:
     image: searxng/searxng:latest
     container_name: searxng
     restart: unless-stopped
+    ports:
+      - "8080:8080"
     volumes:
       - ./docker/searxng:/etc/searxng
     environment:
-      - SEARXNG_BASE_URL=http://searxng:8080/
-      - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-changeme_use_a_real_secret}
+      - SEARXNG_BASE_URL=http://localhost:8080/
+      - "SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:?SEARXNG_SECRET_KEY is not set. Run: pdavid --mode up}"
     depends_on:
       - redis
     networks:
@@ -75,6 +82,9 @@ services:
     command: ["--config=/etc/otel-config.yaml"]
     volumes:
       - ./docker/otel/otel-config.yaml:/etc/otel-config.yaml
+    ports:
+      - "4317:4317"
+      - "4318:4318"
     depends_on:
       - jaeger
     networks:
@@ -86,56 +96,18 @@ services:
     restart: always
     environment:
       - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14250:14250"
     networks:
       - my_custom_network
-
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    restart: unless-stopped
-    volumes:
-      - ollama_data:/root/.ollama
-    networks:
-      - my_custom_network
-
-  # ── vLLM is opt-in — only starts when pdavid --mode up --gpu is used ────
-  # Requires an Nvidia GPU and nvidia-container-toolkit on the host.
-  # Never starts by default — the gpu profile must be explicitly activated.
-  vllm:
-    image: vllm/vllm-openai:latest
-    container_name: vllm_server
-    profiles:
-      - gpu
-    restart: unless-stopped
-    runtime: nvidia
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - HF_TOKEN=${HF_TOKEN}
-    volumes:
-      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
-    command: >
-      --model ${VLLM_MODEL:-Qwen/Qwen2.5-3B-Instruct}
-      --dtype float16
-      --quantization fp8
-      --max-model-len 4096
-      --gpu-memory-utilization 0.85
-    networks:
-      - my_custom_network
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
 
   api:
-    # Image tag is pinned to the installed package version via PDAVID_VERSION.
-    # PDAVID_VERSION is written to .env automatically by the orchestrator on
-    # every run — do not edit it manually.
-    # To upgrade: pip install --upgrade projectdavid-platform
-    #             pdavid --mode up --force-recreate
-    image: thanosprime/entities-api-api:${PDAVID_VERSION:-latest}
+    # Pre-built image from Docker Hub — do not add build: context here.
+    # To build from source use the entities_api dev repo instead.
+    # Scripts (bootstrap_admin.py, create_user.py etc.) are baked into the
+    # image at /app/scripts — do NOT mount a local scripts directory over them.
+    image: thanosprime/entities-api-api:latest
     container_name: fastapi_cosmic_catalyst
     restart: always
     env_file:
@@ -147,24 +119,24 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - REDIS_URL=redis://redis:6379/0
       - BROWSER_WS_ENDPOINT=ws://browser:3000
-      - DEFAULT_SECRET_KEY=${DEFAULT_SECRET_KEY}
+      - "DEFAULT_SECRET_KEY=${DEFAULT_SECRET_KEY:?DEFAULT_SECRET_KEY is not set. Run: pdavid --mode up}"
       - SEARXNG_URL=http://searxng:8080
-      - OTEL_SERVICE_NAME=api-api
+      - OTEL_SERVICE_NAME=entities-api
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
       - OTEL_TRACES_EXPORTER=otlp
       - OTEL_METRICS_EXPORTER=none
       - OTEL_LOGS_EXPORTER=none
-      - OLLAMA_BASE_URL=http://ollama:11434/v1
-      - VLLM_BASE_URL=http://vllm_server:8000
+      # Ollama and vLLM are GPU-only services — localhost stubs used here.
+      # Overridden with real internal URLs by docker-compose.gpu.yml when
+      # pdavid --mode up --gpu is used.
+      - OLLAMA_BASE_URL=http://localhost:11434/v1
+      - VLLM_BASE_URL=http://localhost:8001
       - SHARED_PATH=/app/shared_data
-      - ASSISTANTS_BASE_URL=http://localhost:80
-      - DOWNLOAD_BASE_URL=http://localhost:80/v1/files/download
+    ports:
+      - "9000:9000"
     volumes:
-      - ./src:/app/src
-      - ./alembic.ini:/app/alembic.ini
-      - ./migrations:/app/migrations
-      - ${SHARED_PATH}:/app/shared_data
+      - "${SHARED_PATH:-./shared_data}:/app/shared_data"
     depends_on:
       db:
         condition: service_healthy
@@ -180,31 +152,29 @@ services:
         condition: service_started
       otel-collector:
         condition: service_started
-      ollama:
-        condition: service_started
-      # vllm is not listed here — it is opt-in via --gpu flag and the gpu profile.
     networks:
       - my_custom_network
 
   sandbox:
-    # Image tag is pinned to the installed package version — see api comment above.
-    image: thanosprime/entities-api-sandbox:${PDAVID_VERSION:-latest}
+    # Pre-built image from Docker Hub — do not add build: context here.
+    image: thanosprime/entities-api-sandbox:latest
     container_name: sandbox_api
     restart: always
+    env_file:
+      - .env
     cap_add:
       - SYS_ADMIN
     security_opt:
       - seccomp:unconfined
     devices:
       - /dev/fuse
+    ports:
+      - "8000:8000"
     volumes:
-      - ./src/api/sandbox:/app/sandbox
       - /tmp/sandbox_logs:/app/logs
     depends_on:
       db:
         condition: service_healthy
-    env_file:
-      - .env
     networks:
       - my_custom_network
 
@@ -216,28 +186,16 @@ services:
       USERID: ${SAMBA_USERID:-1000}
       GROUPID: ${SAMBA_GROUPID:-1000}
       TZ: UTC
-      USER: "samba_user;default"
+      USER: "samba_user;${SMBCLIENT_PASSWORD:?SMBCLIENT_PASSWORD is not set. Run: pdavid --mode up}"
       SHARE: "cosmic_share;/samba/share;yes;no;no;samba_user"
-      GLOBAL: "server min protocol = NT1\nserver max protocol = SMB3"
-    volumes:
-      - ${SHARED_PATH}:/samba/share
-    networks:
-      - my_custom_network
-
-  nginx:
-    image: nginx:alpine
-    container_name: nginx_proxy
-    restart: always
+      GLOBAL: |
+        server min protocol = NT1
+        server max protocol = SMB3
     ports:
-      - "80:80"
-      # Uncomment when TLS certs are available:
-      # - "443:443"
+      - "139:139"
+      - "1445:445"
     volumes:
-      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      # Uncomment when TLS certs are available:
-      # - ./docker/nginx/certs:/etc/nginx/certs:ro
-    depends_on:
-      - api
+      - "${SHARED_PATH:-./shared_data}:/samba/share"
     networks:
       - my_custom_network
 
@@ -245,7 +203,6 @@ volumes:
   mysql_data:
   qdrant_storage:
   redis_data:
-  ollama_data:
 
 networks:
   my_custom_network:

@@ -1,78 +1,209 @@
-# docker-compose.gpu.yml
-#
-# GPU service overrides — opt-in extension for users with NVIDIA hardware.
-#
-# USAGE:
-#   entities-dev --mode up --gpu
-#
-# Or manually:
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
-#
-# REQUIREMENTS:
-#   - NVIDIA GPU with drivers installed
-#   - NVIDIA Container Toolkit (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-#   - HF_TOKEN set in .env (for gated model downloads)
-#   - HF_CACHE_PATH set in .env (auto-resolved by entities-dev on first run)
-#
-# To set HF_TOKEN after initial setup:
-#   entities-dev configure --set HF_TOKEN=hf_abc123
-
 services:
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
+  db:
+    image: mysql:8.0
+    container_name: my_mysql_cosmic_catalyst
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is not set. Run: pdavid --mode up}"
+      MYSQL_DATABASE: entities_db
+      MYSQL_USER: api_user
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?MYSQL_PASSWORD is not set. Run: pdavid --mode up}"
     volumes:
-      - ollama_data:/root/.ollama
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3307:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - my_custom_network
 
-  vllm:
-    image: vllm/vllm-openai:latest
-    container_name: vllm_server
-    restart: unless-stopped
-    runtime: nvidia
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      # HF_TOKEN is optional — stack starts without it but gated model
-      # downloads will fail. Set via: entities-dev configure --set HF_TOKEN=hf_abc123
-      - HF_TOKEN=${HF_TOKEN}
-    volumes:
-      # HF_CACHE_PATH uses :- fallback to avoid multi-colon parse error in volume syntax.
-      # The orchestrator always sets this before starting — fallback only fires if
-      # docker compose up is run directly without going through entities-dev.
-      - "${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface"
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant_server
+    restart: always
     ports:
-      - "8001:8000"
-    command: >
-      --model ${VLLM_MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}
-      --dtype float16
-      --quantization fp8
-      --max-model-len 4096
-      --gpu-memory-utilization 0.85
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    environment:
+      QDRANT__STORAGE__STORAGE_PATH: "/qdrant/storage"
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+      QDRANT__LOG_LEVEL: "INFO"
     networks:
       - my_custom_network
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
 
-  # Override api service to point at the real GPU service URLs
-  # instead of the localhost stubs in the base compose file.
-  api:
+  redis:
+    image: redis:7
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - my_custom_network
+
+  browser:
+    image: ghcr.io/browserless/chromium:latest
+    container_name: browserless_chromium
+    restart: always
+    ports:
+      - "3000:3000"
     environment:
-      - OLLAMA_BASE_URL=http://ollama:11434/v1
-      - VLLM_BASE_URL=http://vllm_server:8000
+      - MAX_CONCURRENT_SESSIONS=10
+      - CONNECTION_TIMEOUT=60000
+    networks:
+      - my_custom_network
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./docker/searxng:/etc/searxng
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+      - "SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:?SEARXNG_SECRET_KEY is not set. Run: pdavid --mode up}"
     depends_on:
-      ollama:
+      - redis
+    networks:
+      - my_custom_network
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel_collector
+    restart: always
+    command: ["--config=/etc/otel-config.yaml"]
+    volumes:
+      - ./docker/otel/otel-config.yaml:/etc/otel-config.yaml
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      - jaeger
+    networks:
+      - my_custom_network
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger_ui
+    restart: always
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14250:14250"
+    networks:
+      - my_custom_network
+
+  api:
+    # Pre-built image from Docker Hub — do not add build: context here.
+    # To build from source use the entities_api dev repo instead.
+    # Scripts (bootstrap_admin.py, create_user.py etc.) are baked into the
+    # image at /app/scripts — do NOT mount a local scripts directory over them.
+    image: thanosprime/entities-api-api:latest
+    container_name: fastapi_cosmic_catalyst
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - AUTO_MIGRATE=1
+      - SANDBOX_SERVER_URL=http://sandbox:8000
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379/0
+      - BROWSER_WS_ENDPOINT=ws://browser:3000
+      - "DEFAULT_SECRET_KEY=${DEFAULT_SECRET_KEY:?DEFAULT_SECRET_KEY is not set. Run: pdavid --mode up}"
+      - SEARXNG_URL=http://searxng:8080
+      - OTEL_SERVICE_NAME=entities-api
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_METRICS_EXPORTER=none
+      - OTEL_LOGS_EXPORTER=none
+      # Ollama and vLLM are GPU-only services — localhost stubs used here.
+      # Overridden with real internal URLs by docker-compose.gpu.yml when
+      # pdavid --mode up --gpu is used.
+      - OLLAMA_BASE_URL=http://localhost:11434/v1
+      - VLLM_BASE_URL=http://localhost:8001
+      - SHARED_PATH=/app/shared_data
+    ports:
+      - "9000:9000"
+    volumes:
+      - "${SHARED_PATH:-./shared_data}:/app/shared_data"
+    depends_on:
+      db:
+        condition: service_healthy
+      sandbox:
         condition: service_started
-      vllm:
+      qdrant:
         condition: service_started
+      redis:
+        condition: service_started
+      browser:
+        condition: service_started
+      searxng:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    networks:
+      - my_custom_network
+
+  sandbox:
+    # Pre-built image from Docker Hub — do not add build: context here.
+    image: thanosprime/entities-api-sandbox:latest
+    container_name: sandbox_api
+    restart: always
+    env_file:
+      - .env
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    devices:
+      - /dev/fuse
+    ports:
+      - "8000:8000"
+    volumes:
+      - /tmp/sandbox_logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - my_custom_network
+
+  samba:
+    image: dperson/samba
+    container_name: samba_server
+    restart: unless-stopped
+    environment:
+      USERID: ${SAMBA_USERID:-1000}
+      GROUPID: ${SAMBA_GROUPID:-1000}
+      TZ: UTC
+      USER: "samba_user;${SMBCLIENT_PASSWORD:?SMBCLIENT_PASSWORD is not set. Run: pdavid --mode up}"
+      SHARE: "cosmic_share;/samba/share;yes;no;no;samba_user"
+      GLOBAL: |
+        server min protocol = NT1
+        server max protocol = SMB3
+    ports:
+      - "139:139"
+      - "1445:445"
+    volumes:
+      - "${SHARED_PATH:-./shared_data}:/samba/share"
+    networks:
+      - my_custom_network
 
 volumes:
-  ollama_data:
+  mysql_data:
+  qdrant_storage:
+  redis_data:
+
+networks:
+  my_custom_network:
+    driver: bridge
