@@ -1,3 +1,4 @@
+# projectdavid_platform/start_orchestration.py
 # start_orchestration.py
 #
 # Deployment orchestrator for the Project David / Entities platform.
@@ -11,8 +12,6 @@
 #   pdavid --mode logs --follow
 #   pdavid configure --set HF_TOKEN=hf_abc123
 #   pdavid bootstrap-admin
-#   pdavid create-user --email user@example.com --name "Alice"
-#   pdavid setup-assistant --api-key ad_... --user-id usr_...
 #
 from __future__ import annotations
 
@@ -773,10 +772,9 @@ class Orchestrator:
             typer.echo(f"  {key:<24}: {value}")
         typer.echo("=" * 60)
         typer.echo(
-            "\n  Use ADMIN_API_KEY for provisioning commands:\n"
+            "\n  Use ADMIN_API_KEY to bootstrap the admin user:\n"
             "    pdavid bootstrap-admin\n"
-            "    pdavid create-user\n"
-            "    pdavid setup-assistant\n"
+            "\n  Once bootstrapped, manage users via the API.\n"
         )
 
     def _check_for_required_env_file(self):
@@ -975,6 +973,18 @@ class Orchestrator:
 
     def exec_bootstrap_admin(self, db_url: Optional[str] = None):
         self._ensure_api_running("bootstrap-admin")
+
+        # DATABASE_URL points to db:3306 (internal) — correct inside the container.
+        # SPECIAL_DB_URL points to localhost:3307 (host-side only) — wrong inside container.
+        # Fall back to DATABASE_URL from the loaded .env if no override is provided.
+        resolved_db_url = db_url or os.environ.get("DATABASE_URL")
+        if not resolved_db_url:
+            self.log.error(
+                "No database URL available. "
+                "Ensure DATABASE_URL is set in .env or pass --db-url explicitly."
+            )
+            raise SystemExit(1)
+
         cmd = [
             "docker",
             "compose",
@@ -987,74 +997,16 @@ class Orchestrator:
             "exec",
             API_SERVICE_NAME,
             "python",
-            "/app/scripts/bootstrap_admin.py",
+            "/app/src/api/entities_api/cli/bootstrap_admin.py",
+            "--db-url",
+            resolved_db_url,
         ]
-        if db_url:
-            cmd.extend(["--db-url", db_url])
         try:
             self._run_command(cmd, check=True, suppress_logs=True)
             self.log.info(
-                "bootstrap-admin finished. Copy any printed ADMIN_API_KEY to a safe place."
+                "bootstrap-admin finished. "
+                "Copy any printed ADMIN_API_KEY — it is required for API-level user provisioning."
             )
-        except subprocess.CalledProcessError:
-            raise SystemExit(1)
-
-    def exec_create_user(
-        self,
-        email: Optional[str] = None,
-        name: Optional[str] = None,
-        key_name: Optional[str] = None,
-    ):
-        self._ensure_api_running("create-user")
-        cmd = [
-            "docker",
-            "compose",
-            "--project-directory",
-            str(Path.cwd()),
-            "--env-file",
-            self._env_file_abs,
-            "-f",
-            self.base_compose,
-            "exec",
-            API_SERVICE_NAME,
-            "python",
-            "/app/scripts/create_user.py",
-        ]
-        if email:
-            cmd.extend(["--email", email])
-        if name:
-            cmd.extend(["--name", name])
-        if key_name:
-            cmd.extend(["--key-name", key_name])
-        try:
-            self._run_command(cmd, check=True, suppress_logs=True)
-            self.log.info("create-user finished. Deliver the printed API key to the user securely.")
-        except subprocess.CalledProcessError:
-            raise SystemExit(1)
-
-    def exec_setup_assistant(self, api_key: str, user_id: str):
-        self._ensure_api_running("setup-assistant")
-        cmd = [
-            "docker",
-            "compose",
-            "--project-directory",
-            str(Path.cwd()),
-            "--env-file",
-            self._env_file_abs,
-            "-f",
-            self.base_compose,
-            "exec",
-            API_SERVICE_NAME,
-            "python",
-            "/app/scripts/bootstrap_default_assistant.py",
-            "--api-key",
-            api_key,
-            "--user-id",
-            user_id,
-        ]
-        try:
-            self._run_command(cmd, check=True, suppress_logs=True)
-            self.log.info("setup-assistant finished.")
         except subprocess.CalledProcessError:
             raise SystemExit(1)
 
@@ -1319,59 +1271,23 @@ def configure(
 @app.command(name="bootstrap-admin")
 def bootstrap_admin(
     db_url: Optional[str] = typer.Option(
-        None, "--db-url", help="Override DB URL passed to bootstrap_admin.py."
+        None,
+        "--db-url",
+        help="Override DATABASE_URL for the bootstrap script. Defaults to DATABASE_URL from .env.",
     ),
     verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
 ) -> None:
     """
-    Run bootstrap_admin.py inside the running api container.
+    Provision the default admin user inside the running api container.
 
-    Provisions the default admin user. The stack must be running first.
-    Copy any printed ADMIN_API_KEY — it is required for create-user and
-    setup-assistant.
+    The stack must be running before calling this command.
+    Copy any printed ADMIN_API_KEY — it is required for API-level user provisioning.
+
+    Safe to re-run: existing users and keys are detected and left untouched.
     """
     args = SimpleNamespace(verbose=verbose, gpu=False)
     o = Orchestrator(args)
     o.exec_bootstrap_admin(db_url=db_url)
-
-
-@app.command(name="create-user")
-def create_user(
-    email: Optional[str] = typer.Option(None, "--email", help="New user's email address."),
-    name: Optional[str] = typer.Option(None, "--name", help="New user's full name."),
-    key_name: Optional[str] = typer.Option(
-        None, "--key-name", help="Name for the user's initial API key."
-    ),
-    verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
-) -> None:
-    """
-    Run create_user.py inside the running api container.
-
-    Requires the stack to be running and ADMIN_API_KEY set in .env.
-    Deliver the printed plain-text API key to the user securely.
-    """
-    args = SimpleNamespace(verbose=verbose, gpu=False)
-    o = Orchestrator(args)
-    o.exec_create_user(email=email, name=name, key_name=key_name)
-
-
-@app.command(name="setup-assistant")
-def setup_assistant(
-    api_key: str = typer.Option(..., "--api-key", help="Admin API key (ad_...)."),
-    user_id: str = typer.Option(..., "--user-id", help="Admin user ID."),
-    verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
-) -> None:
-    """
-    Run bootstrap_default_assistant.py inside the running api container.
-
-    Requires admin API key and user ID from a completed bootstrap-admin run.
-
-    Example:\n
-      pdavid setup-assistant --api-key ad_... --user-id usr_...
-    """
-    args = SimpleNamespace(verbose=verbose, gpu=False)
-    o = Orchestrator(args)
-    o.exec_setup_assistant(api_key=api_key, user_id=user_id)
 
 
 def entry_point():
