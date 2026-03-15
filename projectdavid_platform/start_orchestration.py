@@ -385,7 +385,7 @@ class Orchestrator:
 
         # Version mismatch — user has upgraded.
         typer.echo("\n" + "=" * 60)
-        typer.echo("  Platform update detected")
+        typer.echo(f"  Platform update detected")
         typer.echo("=" * 60)
         typer.echo(f"  Installed : {installed}")
         typer.echo(f"  Running   : {env_version}")
