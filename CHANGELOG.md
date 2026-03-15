@@ -1,3 +1,18 @@
+# [1.19.0](https://github.com/project-david-ai/platform-docker/compare/v1.18.0...v1.19.0) (2026-03-15)
+
+
+### Bug Fixes
+
+* correct filename for `ollama` Docker Compose overlay and adjust echo formatting ([6c6c426](https://github.com/project-david-ai/platform-docker/commit/6c6c4261f4d15ba96b711d5ba0ee1507ca5d661d))
+
+
+### Features
+
+* add independent ollama and vLLM overlays with GPU orchestration updates ([e486b28](https://github.com/project-david-ai/platform-docker/commit/e486b2821d01cce1592fec24724a21cf14c39133))
+* add independent ollama and vLLM overlays with GPU orchestration updates ([4be0b86](https://github.com/project-david-ai/platform-docker/commit/4be0b8692a5987ff074b1332ca912f640f42e300))
+* add version upgrade detection and `--pull` support to orchestration ([43727c6](https://github.com/project-david-ai/platform-docker/commit/43727c62f25bcb564918f8d9e709555b8c0019ed))
+* add version upgrade detection and `--pull` support to orchestration ([f7cf25a](https://github.com/project-david-ai/platform-docker/commit/f7cf25aef194b93807729e2a9474d1d5924988be))
+
 # [1.18.0](https://github.com/project-david-ai/platform-docker/compare/v1.17.0...v1.18.0) (2026-03-15)
 
 
