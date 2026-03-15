@@ -125,20 +125,13 @@ services:
       - OTEL_TRACES_EXPORTER=otlp
       - OTEL_METRICS_EXPORTER=none
       - OTEL_LOGS_EXPORTER=none
-      # Ollama and vLLM base URLs — resolved to localhost stubs when GPU
-      # services are not running. Override via docker-compose.gpu.yml.
       - OLLAMA_BASE_URL=http://localhost:11434/v1
       - VLLM_BASE_URL=http://localhost:8001
-      # Container-internal mount point — always fixed regardless of host SHARED_PATH
       - SHARED_PATH=/app/shared_data
     ports:
       - "9000:9000"
     volumes:
-      # Mount scripts so bootstrap/create-user/setup-assistant commands work
       - ./scripts:/app/scripts
-      # SHARED_PATH uses :- fallback to avoid multi-colon parse error in volume syntax.
-      # The orchestrator always sets this before starting — fallback only fires if
-      # docker compose up is run directly without going through entities-dev.
       - "${SHARED_PATH:-./shared_data}:/app/shared_data"
     depends_on:
       db:
@@ -189,15 +182,15 @@ services:
       USERID: ${SAMBA_USERID:-1000}
       GROUPID: ${SAMBA_GROUPID:-1000}
       TZ: UTC
-      # References the generated secret — never the hardcoded literal "default"
       USER: "samba_user;${SMBCLIENT_PASSWORD:?SMBCLIENT_PASSWORD is not set. Run: entities-dev --mode up}"
       SHARE: "cosmic_share;/samba/share;yes;no;no;samba_user"
-      GLOBAL: "server min protocol = NT1\\nserver max protocol = SMB3"
+      GLOBAL: |
+        server min protocol = NT1
+        server max protocol = SMB3
     ports:
       - "139:139"
       - "1445:445"
     volumes:
-      # Same fallback rationale as api service above
       - "${SHARED_PATH:-./shared_data}:/samba/share"
     networks:
       - my_custom_network
