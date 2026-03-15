@@ -1,4 +1,3 @@
-# projectdavid_platform/start_orchestration.py
 # start_orchestration.py
 #
 # Deployment orchestrator for the Project David / Entities platform.
@@ -7,6 +6,7 @@
 # After `pip install projectdavid-platform`:
 #   pdavid --mode up
 #   pdavid --mode up --gpu
+#   pdavid --mode up --pull
 #   pdavid --mode up --exclude vllm --exclude ollama
 #   pdavid --mode up --services api db qdrant
 #   pdavid --mode logs --follow
@@ -59,7 +59,7 @@ except ImportError:
     raise SystemExit(1)
 
 try:
-    from dotenv import load_dotenv
+    from dotenv import load_dotenv, set_key
 except ImportError:
     typer.echo("[error] python-dotenv is required: pip install python-dotenv", err=True)
     raise SystemExit(1)
@@ -81,11 +81,6 @@ BASE_COMPOSE_FILE = "docker-compose.yml"
 GPU_COMPOSE_FILE = "docker-compose.gpu.yml"
 PACKAGE_NAME = "projectdavid_platform"
 
-# Bundled config files AND the compose file itself that must exist in the
-# user's CWD before Docker Compose can start.
-# Each entry is (package-relative path, CWD-relative destination).
-# The compose file is included here so it is always copied to CWD on first
-# run, ensuring the local copy is used rather than the package-internal path.
 _BUNDLED_CONFIGS = [
     ("docker-compose.yml", "docker-compose.yml"),
     ("docker/nginx/nginx.conf", "docker/nginx/nginx.conf"),
@@ -93,7 +88,6 @@ _BUNDLED_CONFIGS = [
     ("docker/searxng/settings.yml", "docker/searxng/settings.yml"),
 ]
 
-# Platform-specific Docker install URLs
 _DOCKER_INSTALL_URLS = {
     "windows": "https://docs.docker.com/desktop/install/windows-install/",
     "darwin": "https://docs.docker.com/desktop/install/mac-install/",
@@ -104,14 +98,11 @@ _NVIDIA_TOOLKIT_INSTALL_URL = (
     "https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
 )
 
-# Maps compose service name -> container name for the container version check.
-# Only owned images are checked — third-party images are skipped entirely.
 _OWNED_SERVICES = {
     "api": API_CONTAINER_NAME,
     "sandbox": "sandbox_api",
 }
 
-# Docker Hub repository names matching the owned services above.
 _OWNED_IMAGES = {
     "api": "thanosprime/entities-api-api",
     "sandbox": "thanosprime/entities-api-sandbox",
@@ -124,18 +115,10 @@ _OWNED_IMAGES = {
 
 
 def _resolve_compose_file(filename: str) -> str:
-    """
-    Resolve the path to a compose file.
-
-    Priority:
-      1. Current working directory — local copy wins, enabling overrides.
-      2. Installed package data — used after pip install with no local copy.
-    """
     local = Path.cwd() / filename
     if local.exists():
         log.debug("Using local compose file: %s", local)
         return str(local)
-
     try:
         pkg_files = importlib.resources.files(PACKAGE_NAME)
         resource = pkg_files / filename
@@ -161,6 +144,7 @@ app = typer.Typer(
         "Deployment orchestrator for the Project David / Entities platform.\n\n"
         "Install:  pip install projectdavid-platform\n"
         "Start:    pdavid --mode up\n"
+        "Update:   pdavid --mode up --pull\n"
         "GPU:      pdavid --mode up --gpu\n"
         "Skip svc: pdavid --mode up --exclude vllm --exclude ollama\n"
         "Config:   pdavid configure --set HF_TOKEN=hf_abc123"
@@ -173,10 +157,6 @@ app = typer.Typer(
 # Orchestrator
 # ---------------------------------------------------------------------------
 class Orchestrator:
-    """
-    Manages the deployment stack: .env generation, Docker Compose lifecycle,
-    and exec-based provisioning commands against the running api container.
-    """
 
     _ENV_FILE = ".env"
     _ENV_EXAMPLE_FILE = ".env.example"
@@ -356,12 +336,7 @@ class Orchestrator:
         if getattr(self.args, "verbose", False):
             self.log.setLevel(logging.DEBUG)
 
-        # _ensure_config_files MUST run before _resolve_compose_file.
-        # It copies the bundled docker-compose.yml (and all service configs)
-        # into CWD so the local copy is always used instead of the package-
-        # internal path. This also wins the Docker Compose race condition where
-        # volume mount targets get created as empty directories before the
-        # config files land.
+        # Must run first — installs bundled configs and wins Docker race condition.
         self._ensure_config_files()
 
         self.base_compose = _resolve_compose_file(BASE_COMPOSE_FILE)
@@ -381,26 +356,70 @@ class Orchestrator:
         return str(Path(self._ENV_FILE).resolve())
 
     # ------------------------------------------------------------------
+    # Version upgrade notice
+    # ------------------------------------------------------------------
+
+    def _check_version_upgrade(self) -> None:
+        """
+        Compare the installed package version against PDAVID_VERSION in .env.
+
+        If they differ the user has upgraded via pip since the last run.
+        Print a clear notice and update PDAVID_VERSION in .env so the notice
+        only fires once per upgrade. Never pulls automatically — the user
+        decides when to apply the update.
+        """
+        try:
+            installed = importlib.metadata.version("projectdavid-platform")
+        except importlib.metadata.PackageNotFoundError:
+            return
+
+        env_version = os.environ.get("PDAVID_VERSION", "").strip()
+
+        if not env_version:
+            # First run — just write the version, no notice needed.
+            self._write_pdavid_version(installed)
+            return
+
+        if env_version == installed:
+            return
+
+        # Version mismatch — user has upgraded.
+        typer.echo("\n" + "=" * 60)
+        typer.echo(f"  Platform update detected")
+        typer.echo("=" * 60)
+        typer.echo(f"  Installed : {installed}")
+        typer.echo(f"  Running   : {env_version}")
+        typer.echo(
+            "\n  New features and fixes are available.\n"
+            "  To apply the update and pull the latest container images:\n\n"
+            "    pdavid --mode up --pull\n\n"
+            "  Your data and secrets are not affected.\n"
+        )
+        typer.echo("=" * 60 + "\n")
+
+        # Update .env so the notice doesn't repeat on every run.
+        self._write_pdavid_version(installed)
+
+    def _write_pdavid_version(self, version: str) -> None:
+        """Write or update PDAVID_VERSION in .env in-place."""
+        try:
+            env_path = Path(self._ENV_FILE)
+            if not env_path.exists():
+                return
+            set_key(str(env_path), "PDAVID_VERSION", version)
+            os.environ["PDAVID_VERSION"] = version
+        except Exception as e:
+            self.log.debug("Could not update PDAVID_VERSION in .env: %s", e)
+
+    # ------------------------------------------------------------------
     # Config file bootstrap
     # ------------------------------------------------------------------
 
     def _ensure_config_files(self) -> None:
         """
-        Copy bundled files (compose file + service configs) into the user's
-        CWD before Docker Compose starts.
-
-        The docker-compose.yml is included in _BUNDLED_CONFIGS so it is
-        always written to CWD on first run. This means the orchestrator
-        always uses the local copy rather than the package-internal path,
-        which prevents the wrong compose file being used after pip install.
-
-        Rules:
-        - Never overwrites an existing file — local customisations are
-          always respected.
-        - If Docker already created an empty directory where a file should
-          live (race condition), it is replaced with the correct file.
-        - Skips silently if the package data cannot be located.
-        - Creates the full directory tree as needed.
+        Copy bundled files into the user's CWD before Docker Compose starts.
+        Detects and replaces directories created by Docker's race condition.
+        Never overwrites existing files — local customisations are preserved.
         """
         copied = []
 
@@ -444,8 +463,7 @@ class Orchestrator:
                 self.log.warning(
                     "Could not install bundled config '%s': %s. "
                     "The service that depends on it may fail to start. "
-                    "You can create it manually or reinstall: "
-                    "pip install --force-reinstall projectdavid-platform",
+                    "Reinstall with: pip install --force-reinstall projectdavid-platform",
                     cwd_rel,
                     e,
                 )
@@ -458,7 +476,7 @@ class Orchestrator:
             )
 
     # ------------------------------------------------------------------
-    # Preflight dependency checks
+    # Preflight
     # ------------------------------------------------------------------
 
     def _has_docker(self) -> bool:
@@ -545,9 +563,6 @@ class Orchestrator:
         ]
         if getattr(self.args, "gpu", False):
             files += ["-f", self.gpu_compose]
-            # Activate the gpu profile so vllm (and any other gpu-profile
-            # services) are included in the compose operation.
-            files += ["--profile", "gpu"]
         return files
 
     def _get_all_services(self) -> List[str]:
@@ -724,11 +739,9 @@ class Orchestrator:
             )
             generation_log["HF_CACHE_PATH"] = f"Auto-resolved for {_platform.system()}"
 
-        # Resolve and pin the package version so the compose file can resolve
-        # ${PDAVID_VERSION} to the correctly tagged owned images automatically.
+        # Pin installed package version on first .env generation.
         try:
-            pkg_version = importlib.metadata.version("projectdavid-platform")
-            env_values["PDAVID_VERSION"] = pkg_version
+            env_values["PDAVID_VERSION"] = importlib.metadata.version("projectdavid-platform")
             generation_log["PDAVID_VERSION"] = "Auto-resolved from installed package"
         except importlib.metadata.PackageNotFoundError:
             env_values["PDAVID_VERSION"] = "latest"
@@ -795,9 +808,7 @@ class Orchestrator:
             typer.echo(f"  {key:<24}: {value}")
         typer.echo("=" * 60)
         typer.echo(
-            "\n  Use ADMIN_API_KEY to bootstrap the admin user:\n"
-            "    pdavid bootstrap-admin\n"
-            "\n  Once bootstrapped, manage users via the API.\n"
+            "\n  Use ADMIN_API_KEY to bootstrap the admin user:\n" "    pdavid bootstrap-admin\n"
         )
 
     def _check_for_required_env_file(self):
@@ -856,72 +867,7 @@ class Orchestrator:
                 )
 
     # ------------------------------------------------------------------
-    # Container version check
-    # ------------------------------------------------------------------
-
-    def _check_container_versions(self) -> None:
-        """
-        Compare running container image tags against what the installed package
-        version expects. Prints a non-blocking notice if any owned container
-        is behind.
-
-        Rules:
-        - Only checks owned images (api, sandbox) — skips all third-party images.
-        - Never pulls from Docker Hub — tag comparison only, works air-gapped.
-        - Swallows all exceptions silently — never blocks startup.
-        - Skipped entirely if PDAVID_NO_UPDATE_CHECK=1 is set.
-        """
-        if os.environ.get("PDAVID_NO_UPDATE_CHECK", "").strip() == "1":
-            return
-
-        try:
-            pkg_version = importlib.metadata.version("projectdavid-platform")
-        except importlib.metadata.PackageNotFoundError:
-            return
-
-        try:
-            stale = []
-
-            for svc_name, container_name in _OWNED_SERVICES.items():
-                expected_image = f"{_OWNED_IMAGES[svc_name]}:{pkg_version}"
-
-                result = self._run_command(
-                    [
-                        "docker",
-                        "inspect",
-                        container_name,
-                        "--format",
-                        "{{.Config.Image}}",
-                    ],
-                    capture_output=True,
-                    check=False,
-                    suppress_logs=True,
-                )
-
-                if result.returncode != 0:
-                    continue
-
-                running_image = result.stdout.strip()
-
-                if running_image and running_image != expected_image:
-                    stale.append((svc_name, running_image, expected_image))
-
-            if stale:
-                typer.echo("\n" + "=" * 60)
-                typer.echo("  Container update available")
-                typer.echo("=" * 60)
-                for svc, running, expected in stale:
-                    typer.echo(f"  {svc:<10} running : {running}")
-                    typer.echo(f"  {'':10} current : {expected}")
-                typer.echo(
-                    "\n  To apply:\n" "    pdavid --mode up --force-recreate\n" + "=" * 60 + "\n"
-                )
-
-        except Exception:
-            pass
-
-    # ------------------------------------------------------------------
-    # Container running checks
+    # Container checks
     # ------------------------------------------------------------------
 
     def _is_container_running(self, container_name: str) -> bool:
@@ -943,7 +889,7 @@ class Orchestrator:
     def _handle_up(self):
         load_dotenv(dotenv_path=self._ENV_FILE, override=True)
         self._validate_secrets()
-        self._check_container_versions()
+        self._check_version_upgrade()
 
         up_cmd = ["docker", "compose"] + self._compose_files() + ["up"]
         if not getattr(self.args, "attached", False):
@@ -952,6 +898,8 @@ class Orchestrator:
             up_cmd.append("--build")
         if getattr(self.args, "force_recreate", False):
             up_cmd.append("--force-recreate")
+        if getattr(self.args, "pull", False):
+            up_cmd.extend(["--pull", "always"])
 
         exclude = set(getattr(self.args, "exclude", None) or [])
         target = list(getattr(self.args, "services", None) or [])
@@ -1062,9 +1010,6 @@ class Orchestrator:
 
     def exec_bootstrap_admin(self, db_url: Optional[str] = None):
         self._ensure_api_running("bootstrap-admin")
-
-        # DATABASE_URL points to db:3306 (internal) — correct inside the container.
-        # SPECIAL_DB_URL points to localhost:3307 (host-side only) — wrong inside container.
         resolved_db_url = db_url or os.environ.get("DATABASE_URL")
         if not resolved_db_url:
             self.log.error(
@@ -1072,7 +1017,6 @@ class Orchestrator:
                 "Ensure DATABASE_URL is set in .env or pass --db-url explicitly."
             )
             raise SystemExit(1)
-
         cmd = [
             "docker",
             "compose",
@@ -1151,7 +1095,7 @@ def main(
     gpu: bool = typer.Option(
         False,
         "--gpu",
-        help="Include GPU services (vLLM) via the gpu profile.",
+        help="Include GPU services (vLLM + Ollama) via docker-compose.gpu.yml.",
     ),
     services: Optional[List[str]] = typer.Option(
         None,
@@ -1162,7 +1106,7 @@ def main(
         None,
         "--exclude",
         "-x",
-        help="Exclude service(s) from 'up'. Repeat for multiple: --exclude ollama",
+        help="Exclude service(s) from 'up'. Repeat for multiple: --exclude vllm --exclude ollama",
     ),
     down: bool = typer.Option(False, "--down", help="Run 'down' before starting."),
     clear_volumes: bool = typer.Option(
@@ -1170,6 +1114,11 @@ def main(
     ),
     force_recreate: bool = typer.Option(
         False, "--force-recreate", help="Force-recreate containers."
+    ),
+    pull: bool = typer.Option(
+        False,
+        "--pull",
+        help="Pull the latest container images before starting. Use after upgrading the package.",
     ),
     attached: bool = typer.Option(False, "--attached", "-a", help="Run up in foreground."),
     build_before_up: bool = typer.Option(False, "--build-before-up", help="Build before up."),
@@ -1195,8 +1144,9 @@ def main(
 
     Examples:\n
       pdavid --mode up\n
+      pdavid --mode up --pull\n
       pdavid --mode up --gpu\n
-      pdavid --mode up --exclude ollama\n
+      pdavid --mode up --exclude vllm --exclude ollama\n
       pdavid --mode up --services api db qdrant\n
       pdavid --mode up --down --clear-volumes\n
       pdavid --mode logs --follow --timestamps\n
@@ -1222,6 +1172,13 @@ def main(
         )
         raise SystemExit(1)
 
+    if pull and mode not in ("up", "both"):
+        typer.echo(
+            f"[error] --pull is only valid with --mode=up or --mode=both (got '{mode}').",
+            err=True,
+        )
+        raise SystemExit(1)
+
     if clear_volumes:
         down = True
 
@@ -1233,6 +1190,7 @@ def main(
         down=down,
         clear_volumes=clear_volumes,
         force_recreate=force_recreate,
+        pull=pull,
         attached=attached,
         build_before_up=build_before_up,
         no_cache=no_cache,
