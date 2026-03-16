@@ -5,8 +5,8 @@
 [![PyPI](https://img.shields.io/pypi/v/projectdavid-platform?style=flat-square)](https://pypi.org/project/projectdavid-platform/)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](https://polyformproject.org/licenses/noncommercial/1.0.0/)
 
-The projectdavid-platform API provides a simple, self-hosted interface for state-of-the-art AI — assistants, agents, RAG pipelines, and code execution — with full parity to the OpenAI Assistants API across heterogeneous inference backends.
-Connect any model, anywhere. Run inference locally via Ollama or vLLM, or route to remote providers like Together AI and others — all through a single unified API. Switch backends without changing your application code.
+The projectdavid-platform API provides a simple, self-hosted interface for state-of-the-art AI — assistants, agents, RAG pipelines, and code execution — with full parity to the OpenAI Assistants API across heterogeneous inference providers.
+Connect any model, anywhere. Run inference locally via Ollama or vLLM, or route to remote providers like Together AI — all through a single unified API. Switch providers without changing your application code.
 Get started by installing the platform and creating your first API key. Discover how to build assistants, run code, search the web, query vector stores, and orchestrate multi-step agent workflows.
 State-of-the-art AI. Your infrastructure. Your data.
 
@@ -56,6 +56,13 @@ Requires an NVIDIA GPU with the [NVIDIA Container Toolkit](https://docs.nvidia.c
 ---
 
 ## Stack Services
+
+
+![Project David Stack](assets/images/projectdavid-stack.png)
+
+
+
+
 
 | Service | Image | Description |
 |---|---|---|
