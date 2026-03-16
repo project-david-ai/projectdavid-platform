@@ -58,7 +58,7 @@ Requires an NVIDIA GPU with the [NVIDIA Container Toolkit](https://docs.nvidia.c
 ## Stack Services
 
 
-![Project David Stack](assets/images/projectdavid-stack.png)
+![Project David Stack](assets/svg/projectdavid-stack.svg)
 
 
 
