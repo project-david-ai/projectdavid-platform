@@ -13,6 +13,11 @@ Connect any model, anywhere. Run inference locally via Ollama or vLLM, or route 
 
 ---
 
+[![Project David](https://raw.githubusercontent.com/frankie336/entities_api/master/assets/projectdavid_logo.png)](https://raw.githubusercontent.com/frankie336/entities_api/master/assets/projectdavid_logo.png)
+
+---
+
+
 ## Installation
 
 ```bash
