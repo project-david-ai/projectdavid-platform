@@ -72,7 +72,7 @@ services:
     image: otel/opentelemetry-collector-contrib:latest
     container_name: otel_collector
     restart: always
-    command: ["--config=/etc/otel-config.yaml"]
+    command:["--config=/etc/otel-config.yaml"]
     volumes:
       - ./docker/otel/otel-config.yaml:/etc/otel-config.yaml
     depends_on:
@@ -94,7 +94,7 @@ services:
     # Always uses :latest — run `pdavid --mode up --pull` to get the newest version.
     # Scripts are baked into the image at /app/src — do NOT mount a local
     # scripts directory over them.
-    image: thanosprime/entities-api-api:latest
+    image: thanosprime/projectdavid-core-api:latest
     container_name: fastapi_cosmic_catalyst
     restart: always
     env_file:
@@ -145,7 +145,7 @@ services:
   sandbox:
     # Pre-built image from Docker Hub.
     # Always uses :latest — run `pdavid --mode up --pull` to get the newest version.
-    image: thanosprime/entities-api-sandbox:latest
+    image: thanosprime/projectdavid-core-sandbox:latest
     container_name: sandbox_api
     restart: always
     cap_add:
