@@ -112,10 +112,9 @@ _OWNED_SERVICES = {
 }
 
 _OWNED_IMAGES = {
-    "api": "thanosprime/entities-api-api",
-    "sandbox": "thanosprime/entities-api-sandbox",
+    "api": "thanosprime/projectdavid-core-api",
+    "sandbox": "thanosprime/projectdavid-core-sandbox",
 }
-
 
 # ---------------------------------------------------------------------------
 # Compose file path resolution

@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="720" viewBox="0 0 900 720">
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="800" viewBox="0 0 900 800">
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M2 1L8 5L2 9" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -47,7 +47,7 @@
   </defs>
 
   <!-- Background -->
-  <rect width="900" height="720" class="bg" rx="16"/>
+  <rect width="900" height="800" class="bg" rx="16"/>
 
   <!-- Header -->
   <text x="450" y="44" text-anchor="middle" class="title">Project David Stack</text>
@@ -57,7 +57,7 @@
   <text x="50" y="98" class="tier-label">DEVELOPER LAYER</text>
   <rect x="50" y="108" width="800" height="64" rx="10" class="sdk-box"/>
   <text x="450" y="134" text-anchor="middle" class="sdk-title">projectdavid</text>
-  <text x="450" y="154" text-anchor="middle" class="sdk-sub">Python SDK · pip install projectdavid · assistants · threads · tools · vector stores · streaming</text>
+  <text x="450" y="154" text-anchor="middle" class="sdk-sub">Python SDK · pip install projectdavid · assistants · datasets · training · vector stores</text>
 
   <!-- Arrow SDK → Platform -->
   <line x1="450" y1="172" x2="450" y2="196" class="conn" marker-end="url(#arrow)"/>
@@ -67,7 +67,7 @@
   <text x="50" y="214" class="tier-label">ORCHESTRATION LAYER</text>
   <rect x="50" y="224" width="800" height="64" rx="10" class="plat-box"/>
   <text x="450" y="250" text-anchor="middle" class="plat-title">projectdavid-platform</text>
-  <text x="450" y="270" text-anchor="middle" class="plat-sub">pip install projectdavid-platform · pdavid --mode up · lifecycle · config · provisioning · GPU opt-in</text>
+  <text x="450" y="270" text-anchor="middle" class="plat-sub">pip install projectdavid-platform · pdavid --mode up · --profile training · provisioning · GPU opt-in</text>
 
   <!-- Arrow Platform → Core -->
   <line x1="450" y1="288" x2="450" y2="312" class="conn" marker-end="url(#arrow)"/>
@@ -75,7 +75,7 @@
 
   <!-- ── TIER 3: CORE container ──────────────────────────── -->
   <text x="50" y="330" class="tier-label">RUNTIME LAYER — projectdavid-core</text>
-  <rect x="50" y="340" width="800" height="270" rx="12" class="core-box"/>
+  <rect x="50" y="340" width="800" height="334" rx="12" class="core-box"/>
 
   <!-- nginx header strip -->
   <rect x="66" y="356" width="768" height="38" rx="6" class="svc-api"/>
@@ -91,64 +91,73 @@
   <text x="648" y="424" text-anchor="middle" class="svc-label">sandbox</text>
   <text x="648" y="440" text-anchor="middle" class="svc-sub">Secure code execution · SYS_ADMIN · /dev/fuse</text>
 
-  <!-- Row 2: db + qdrant + redis -->
-  <rect x="66" y="468" width="238" height="54" rx="6" class="svc-data"/>
-  <text x="185" y="488" text-anchor="middle" class="svc-label">db</text>
-  <text x="185" y="504" text-anchor="middle" class="svc-sub">MySQL 8.0 · relational persistence</text>
+  <!-- NEW Row 2: training-api + training-worker -->
+  <rect x="66" y="468" width="372" height="54" rx="6" class="svc-api"/>
+  <text x="252" y="488" text-anchor="middle" class="svc-label">training-api</text>
+  <text x="252" y="504" text-anchor="middle" class="svc-sub">FastAPI · datasets · jobs · models · port 9001</text>
 
-  <rect x="316" y="468" width="238" height="54" rx="6" class="svc-data"/>
-  <text x="435" y="488" text-anchor="middle" class="svc-label">qdrant</text>
-  <text x="435" y="504" text-anchor="middle" class="svc-sub">Vector database · embeddings · RAG</text>
+  <rect x="462" y="468" width="372" height="54" rx="6" class="svc-gpu"/>
+  <text x="648" y="488" text-anchor="middle" class="svc-label">training-worker</text>
+  <text x="648" y="504" text-anchor="middle" class="svc-sub">Redis BRPOP · Unsloth / Axolotl · HTTP ephemeral node</text>
 
-  <rect x="566" y="468" width="268" height="54" rx="6" class="svc-data"/>
-  <text x="700" y="488" text-anchor="middle" class="svc-label">redis</text>
-  <text x="700" y="504" text-anchor="middle" class="svc-sub">Cache · message broker</text>
+  <!-- Row 3: db + qdrant + redis -->
+  <rect x="66" y="532" width="238" height="54" rx="6" class="svc-data"/>
+  <text x="185" y="552" text-anchor="middle" class="svc-label">db</text>
+  <text x="185" y="568" text-anchor="middle" class="svc-sub">MySQL 8.0 · relational persistence</text>
 
-  <!-- Row 3: searxng + browser + otel + jaeger + samba -->
-  <rect x="66" y="532" width="185" height="54" rx="6" class="svc-search"/>
-  <text x="158" y="552" text-anchor="middle" class="svc-label">searxng</text>
-  <text x="158" y="568" text-anchor="middle" class="svc-sub">Self-hosted web search</text>
+  <rect x="316" y="532" width="238" height="54" rx="6" class="svc-data"/>
+  <text x="435" y="552" text-anchor="middle" class="svc-label">qdrant</text>
+  <text x="435" y="568" text-anchor="middle" class="svc-sub">Vector database · embeddings · RAG</text>
 
-  <rect x="261" y="532" width="185" height="54" rx="6" class="svc-search"/>
-  <text x="353" y="552" text-anchor="middle" class="svc-label">browser</text>
-  <text x="353" y="568" text-anchor="middle" class="svc-sub">Headless Chromium · web agent</text>
+  <rect x="566" y="532" width="268" height="54" rx="6" class="svc-data"/>
+  <text x="700" y="552" text-anchor="middle" class="svc-label">redis</text>
+  <text x="700" y="568" text-anchor="middle" class="svc-sub">Cache · message broker · training queue</text>
 
-  <rect x="456" y="532" width="155" height="54" rx="6" class="svc-obs"/>
-  <text x="533" y="552" text-anchor="middle" class="svc-label">otel-collector</text>
-  <text x="533" y="568" text-anchor="middle" class="svc-sub">Telemetry</text>
+  <!-- Row 4: searxng + browser + otel + jaeger + samba -->
+  <rect x="66" y="596" width="185" height="54" rx="6" class="svc-search"/>
+  <text x="158" y="616" text-anchor="middle" class="svc-label">searxng</text>
+  <text x="158" y="632" text-anchor="middle" class="svc-sub">Self-hosted web search</text>
 
-  <rect x="621" y="532" width="100" height="54" rx="6" class="svc-obs"/>
-  <text x="671" y="552" text-anchor="middle" class="svc-label">jaeger</text>
-  <text x="671" y="568" text-anchor="middle" class="svc-sub">Tracing UI</text>
+  <rect x="261" y="596" width="185" height="54" rx="6" class="svc-search"/>
+  <text x="353" y="616" text-anchor="middle" class="svc-label">browser</text>
+  <text x="353" y="632" text-anchor="middle" class="svc-sub">Headless Chromium · web agent</text>
 
-  <rect x="731" y="532" width="103" height="54" rx="6" class="svc-files"/>
-  <text x="782" y="552" text-anchor="middle" class="svc-label">samba</text>
-  <text x="782" y="568" text-anchor="middle" class="svc-sub">File sharing</text>
+  <rect x="456" y="596" width="155" height="54" rx="6" class="svc-obs"/>
+  <text x="533" y="616" text-anchor="middle" class="svc-label">otel-collector</text>
+  <text x="533" y="632" text-anchor="middle" class="svc-sub">Telemetry</text>
+
+  <rect x="621" y="596" width="100" height="54" rx="6" class="svc-obs"/>
+  <text x="671" y="616" text-anchor="middle" class="svc-label">jaeger</text>
+  <text x="671" y="632" text-anchor="middle" class="svc-sub">Tracing UI</text>
+
+  <rect x="731" y="596" width="103" height="54" rx="6" class="svc-files"/>
+  <text x="782" y="616" text-anchor="middle" class="svc-label">samba</text>
+  <text x="782" y="632" text-anchor="middle" class="svc-sub">API adapter file hub</text>
 
   <!-- GPU optional strip -->
-  <rect x="66" y="596" width="768" height="38" rx="6" class="svc-gpu"/>
-  <text x="450" y="610" text-anchor="middle" class="svc-label">ollama · vllm  —  GPU opt-in</text>
-  <text x="450" y="624" text-anchor="middle" class="svc-sub">pdavid --mode up --ollama · --vllm · --gpu · NVIDIA runtime · nvidia-container-toolkit</text>
+  <rect x="66" y="660" width="768" height="38" rx="6" class="svc-gpu"/>
+  <text x="450" y="674" text-anchor="middle" class="svc-label">ollama · vllm  —  GPU opt-in</text>
+  <text x="450" y="688" text-anchor="middle" class="svc-sub">pdavid --mode up --ollama · --vllm · --gpu · NVIDIA runtime · nvidia-container-toolkit</text>
 
   <!-- Arrow Core → Inference -->
-  <line x1="450" y1="614" x2="450" y2="634" class="conn" marker-end="url(#arrow)"/>
+  <line x1="450" y1="678" x2="450" y2="698" class="conn" marker-end="url(#arrow)"/>
 
   <!-- ── INFERENCE PROVIDERS ────────────────────────────── -->
-  <text x="50" y="654" class="tier-label">INFERENCE PROVIDERS</text>
+  <text x="50" y="718" class="tier-label">INFERENCE PROVIDERS</text>
 
-  <rect x="66" y="662" width="180" height="44" rx="6" class="inf-box"/>
-  <text x="156" y="679" text-anchor="middle" class="inf-label">Ollama</text>
-  <text x="156" y="695" text-anchor="middle" class="inf-sub">Local · any GGUF model</text>
+  <rect x="66" y="726" width="180" height="44" rx="6" class="inf-box"/>
+  <text x="156" y="743" text-anchor="middle" class="inf-label">Ollama</text>
+  <text x="156" y="759" text-anchor="middle" class="inf-sub">Local · any GGUF model</text>
 
-  <rect x="258" y="662" width="180" height="44" rx="6" class="inf-box"/>
-  <text x="348" y="679" text-anchor="middle" class="inf-label">vLLM</text>
-  <text x="348" y="695" text-anchor="middle" class="inf-sub">Local · high-throughput GPU</text>
+  <rect x="258" y="726" width="180" height="44" rx="6" class="inf-box"/>
+  <text x="348" y="743" text-anchor="middle" class="inf-label">vLLM</text>
+  <text x="348" y="759" text-anchor="middle" class="inf-sub">Local · high-throughput GPU</text>
 
-  <rect x="450" y="662" width="180" height="44" rx="6" class="inf-box"/>
-  <text x="540" y="679" text-anchor="middle" class="inf-label">Together AI</text>
-  <text x="540" y="695" text-anchor="middle" class="inf-sub">Remote · hosted models</text>
+  <rect x="450" y="726" width="180" height="44" rx="6" class="inf-box"/>
+  <text x="540" y="743" text-anchor="middle" class="inf-label">Together AI</text>
+  <text x="540" y="759" text-anchor="middle" class="inf-sub">Remote · hosted models</text>
 
-  <rect x="642" y="662" width="192" height="44" rx="6" class="inf-box"/>
-  <text x="738" y="679" text-anchor="middle" class="inf-label">OpenAI-compatible</text>
-  <text x="738" y="695" text-anchor="middle" class="inf-sub">Any provider · unified API</text>
+  <rect x="642" y="726" width="192" height="44" rx="6" class="inf-box"/>
+  <text x="738" y="743" text-anchor="middle" class="inf-label">OpenAI-compatible</text>
+  <text x="738" y="759" text-anchor="middle" class="inf-sub">Any provider · unified API</text>
 </svg>
