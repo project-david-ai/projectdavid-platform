@@ -1,4 +1,4 @@
-# docker-compose.ollama.yml
+# projectdavid_platform/docker-compose.ollama.yml
 #
 # Ollama opt-in overlay — local LLM inference via Ollama.
 # Can be used independently of vLLM.

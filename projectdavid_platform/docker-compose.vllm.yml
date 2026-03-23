@@ -1,4 +1,4 @@
-# docker-compose.vllm.yml
+# projectdavid_platform/docker-compose.vllm.yml
 #
 # vLLM opt-in overlay — high-throughput GPU inference via vLLM.
 # Can be used independently of Ollama.

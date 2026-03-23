@@ -1,3 +1,4 @@
+# projectdavid_platform/docker-compose.yml
 services:
   db:
     image: mysql:8.0

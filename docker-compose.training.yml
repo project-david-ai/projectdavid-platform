@@ -1,0 +1,111 @@
+# docker-compose.training.yml
+#
+# Sovereign Forge opt-in overlay — fine-tuning pipeline + Ray compute mesh.
+#
+# Adds:
+#   training-api   — REST API for datasets, jobs, and model registry (:9001)
+#   training-worker — GPU worker: Ray head node, DeploymentSupervisor actor,
+#                     dynamic vLLM container spawning via Docker SDK
+#
+# USAGE:
+#   pdavid --mode up --training
+#   pdavid --mode up --training --vllm      # + static vLLM inference server
+#   pdavid --mode up --gpu --training       # full sovereign stack
+#
+# Or manually:
+#   docker compose -f docker-compose.yml -f docker-compose.training.yml up -d
+#
+# REQUIREMENTS:
+#   - NVIDIA GPU with drivers installed
+#   - NVIDIA Container Toolkit
+#     https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+#   - /var/run/docker.sock accessible (worker spawns vLLM containers via Docker SDK)
+#   - HF_TOKEN set in .env for gated model downloads
+#     pdavid configure --set HF_TOKEN=hf_abc123
+#
+# SCALE-OUT:
+#   To join a second GPU machine to the Ray cluster, set on the remote machine:
+#     RAY_ADDRESS=ray://<head_ip>:10001
+#   Then: docker compose -f docker-compose.yml -f docker-compose.training.yml up -d training-worker
+#   No code changes required — Ray discovers the node automatically.
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # training-api — Fine-tuning REST API (no GPU required)
+  # ---------------------------------------------------------------------------
+  training-api:
+    image: thanosprime/projectdavid-core-training-api:latest
+    container_name: training_api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - SECRET_KEY=${SECRET_KEY}
+      - DEFAULT_SECRET_KEY=${DEFAULT_SECRET_KEY}
+      - REDIS_URL=redis://redis:6379/0
+      - ASSISTANTS_BASE_URL=http://api:9000
+      - WORKER_API_KEY=${ADMIN_API_KEY}
+      - SANDBOX_AUTH_SECRET=${SANDBOX_AUTH_SECRET}
+      - SHARED_PATH=/mnt/training_data
+      - PYTHONUNBUFFERED=1
+      # training-api queries Ray via dashboard HTTP API only.
+      # No direct GCS connection — RAY_ADDRESS not needed here.
+    ports:
+      - "9001:9001"
+    volumes:
+      - ${SHARED_PATH:-./shared_data}:/mnt/training_data
+    depends_on:
+      - redis
+      - training-worker
+    networks:
+      - my_custom_network
+
+  # ---------------------------------------------------------------------------
+  # training-worker — GPU worker + Ray head node
+  # ---------------------------------------------------------------------------
+  training-worker:
+    image: thanosprime/projectdavid-core-training-worker:latest
+    container_name: training_worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    runtime: nvidia
+    shm_size: '5gb'
+    environment:
+      - RAY_CLIENT_SERVER_PORT=10001
+      - TRAINING_PROFILE=${TRAINING_PROFILE:-laptop}
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379/0
+      - ASSISTANTS_BASE_URL=http://api:9000
+      - WORKER_API_KEY=${ADMIN_API_KEY}
+      - SHARED_PATH=/mnt/training_data
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=/root/.cache/huggingface
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - PYTHONUNBUFFERED=1
+      # Ray: unset = start as head node (default).
+      # Set to ray://<head_ip>:10001 to join an existing cluster as a worker.
+      - RAY_ADDRESS=${RAY_ADDRESS:-}
+      - RAY_DASHBOARD_PORT=${RAY_DASHBOARD_PORT:-8265}
+    ports:
+      - "8265:8265"    # Ray dashboard — http://localhost:8265
+      - "10001:10001"  # Ray client protocol (external node join)
+    volumes:
+      # Docker SDK access — required for dynamic vLLM container spawning
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${SHARED_PATH:-./shared_data}:/mnt/training_data
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+    depends_on:
+      - redis
+    networks:
+      - my_custom_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
