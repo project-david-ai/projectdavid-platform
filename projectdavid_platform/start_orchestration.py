@@ -83,10 +83,12 @@ BASE_COMPOSE_FILE = "docker-compose.yml"
 GPU_COMPOSE_FILE = "docker-compose.gpu.yml"
 OLLAMA_COMPOSE_FILE = "docker-compose.ollama.yml"
 VLLM_COMPOSE_FILE = "docker-compose.vllm.yml"
+TRAINING_COMPOSE_FILE = "docker-compose.training.yml"
 PACKAGE_NAME = "projectdavid_platform"
 CHANGELOG_URL = "https://github.com/project-david-ai/platform/blob/master/CHANGELOG.md"
 
 _BUNDLED_CONFIGS = [
+    ("docker-compose.training.yml", "docker-compose.training.yml"),
     ("docker-compose.yml", "docker-compose.yml"),
     ("docker-compose.ollama.yml", "docker-compose.ollama.yml"),
     ("docker-compose.vllm.yml", "docker-compose.vllm.yml"),
@@ -228,6 +230,12 @@ class Orchestrator:
     }
 
     _DEFAULT_VALUES = {
+        "TRAINING_PROFILE": "laptop",
+        # Ray: blank = this node starts as Ray head.
+        # Set to ray://<head_ip>:10001 to join an existing cluster.
+        "RAY_ADDRESS": "",
+        "RAY_DASHBOARD_PORT": "8265",
+        "VLLM_EXTRA_FLAGS": "",
         "ASSISTANTS_BASE_URL": "http://localhost:80",
         "SANDBOX_SERVER_URL": "http://sandbox:8000",
         "DOWNLOAD_BASE_URL": "http://localhost:80/v1/files/download",
@@ -323,6 +331,11 @@ class Orchestrator:
             "SAMBA_USERID",
             "SAMBA_GROUPID",
         ],
+        "Training Stack": [
+            "TRAINING_PROFILE",
+            "RAY_ADDRESS",
+            "RAY_DASHBOARD_PORT",
+        ],
         "Tool Identifiers": [
             "TOOL_CODE_INTERPRETER",
             "TOOL_WEB_SEARCH",
@@ -359,10 +372,21 @@ class Orchestrator:
         self.gpu_compose = _resolve_compose_file(GPU_COMPOSE_FILE)
         self.ollama_compose = _resolve_compose_file(OLLAMA_COMPOSE_FILE)
         self.vllm_compose = _resolve_compose_file(VLLM_COMPOSE_FILE)
+
+        self.training_compose = _resolve_compose_file(TRAINING_COMPOSE_FILE)
+
         self.compose_config = self._load_compose_config()
         self._check_for_required_env_file()
         self._configure_shared_path()
         self._configure_hf_cache_path()
+        # ----------------------------------------
+        # Inject any missing overlay-specific env vars into .env
+        # This runs before _handle_up() so the vars are live in the environment
+        # before docker compose reads them.
+        # -----------------------------------------
+        if getattr(self.args, "training", False):
+            self._merge_env_for_overlay("training")
+
         self._ensure_dockerignore()
 
     # ------------------------------------------------------------------
@@ -566,6 +590,10 @@ class Orchestrator:
         if not self._has_docker_compose():
             return False
 
+        training = getattr(self.args, "training", False)
+        if training and not self._validate_gpu_prereqs("--training"):
+            return False
+
         gpu = getattr(self.args, "gpu", False)
         ollama = getattr(self.args, "ollama", False)
         vllm = getattr(self.args, "vllm", False)
@@ -583,16 +611,16 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # Utilities
     # ------------------------------------------------------------------
-
-    def _compose_files(self) -> List[str]:
+    def _compose_files(self) -> list:
         """
-        Build the compose file flag list for docker compose commands.
+        Builds the compose file flag list for docker compose commands.
 
         Flag behaviour:
-          --gpu    → base + gpu overlay (both ollama + vllm)
-          --ollama → base + ollama overlay only
-          --vllm   → base + vllm overlay only
-          (none)   → base only
+          --gpu      → base + gpu overlay (both ollama + vllm)
+          --ollama   → base + ollama overlay only
+          --vllm     → base + vllm overlay only
+          --training → base + training overlay (training-api + training-worker + Ray)
+          Flags are additive — any combination is valid.
         """
         files = [
             "--project-directory",
@@ -606,6 +634,7 @@ class Orchestrator:
         gpu = getattr(self.args, "gpu", False)
         ollama = getattr(self.args, "ollama", False)
         vllm = getattr(self.args, "vllm", False)
+        training = getattr(self.args, "training", False)
 
         if gpu:
             files += ["-f", self.gpu_compose]
@@ -614,6 +643,10 @@ class Orchestrator:
                 files += ["-f", self.ollama_compose]
             if vllm:
                 files += ["-f", self.vllm_compose]
+
+        # Training is independent of GPU inference overlays — always additive
+        if training:
+            files += ["-f", self.training_compose]
 
         return files
 
@@ -896,6 +929,75 @@ class Orchestrator:
             os.environ["HF_CACHE_PATH"] = hf_path
             self.log.info("Defaulting HF_CACHE_PATH to: %s", hf_path)
 
+    def _merge_env_for_overlay(self, overlay: str) -> None:
+        """
+        Safely injects variables required by a new overlay into an existing .env
+        without touching any values that are already set.
+
+        Called when --training (or future overlays) are added to a running stack.
+        Never regenerates secrets. Never overwrites existing values.
+        Logs every variable it adds so the user knows exactly what changed.
+
+        overlay: one of "training", "ollama", "vllm", "gpu"
+        """
+        # Variables required per overlay — only injected if absent from .env
+        _OVERLAY_VARS = {
+            "training": {
+                "TRAINING_PROFILE": "laptop",
+                "RAY_ADDRESS": "",
+                "RAY_DASHBOARD_PORT": "8265",
+            },
+            # Future overlays can declare their own required vars here
+            "ollama": {},
+            "vllm": {},
+            "gpu": {},
+        }
+
+        required = _OVERLAY_VARS.get(overlay, {})
+        if not required:
+            return
+
+        env_path = Path(self._ENV_FILE)
+        if not env_path.exists():
+            self.log.debug(
+                "_merge_env_for_overlay: .env not found — skipping merge for '%s'", overlay
+            )
+            return
+
+        content = env_path.read_text(encoding="utf-8")
+        injected = []
+
+        for key, default in required.items():
+            # Check both the file content and the live environment
+            if re.search(rf"^{re.escape(key)}=", content, re.MULTILINE):
+                self.log.debug("_merge_env_for_overlay: '%s' already in .env — skipping.", key)
+                continue
+            if os.environ.get(key, "").strip():
+                self.log.debug(
+                    "_merge_env_for_overlay: '%s' already in environment — skipping.", key
+                )
+                continue
+
+            # Inject at end of file with a section comment on first injection
+            if not injected:
+                content += f"\n# Added by pdavid --training overlay\n"
+            content += f"{key}={default}\n"
+            os.environ[key] = default
+            injected.append(key)
+            self.log.info("_merge_env_for_overlay: injected '%s=%s' into .env", key, default)
+
+        if injected:
+            env_path.write_text(content, encoding="utf-8")
+            typer.echo(
+                f"\n  ✚ Added {len(injected)} variable(s) to .env for --{overlay} overlay:\n"
+                + "\n".join(f"    {k}" for k in injected)
+                + "\n  Edit them any time: pdavid configure --set KEY=VALUE\n"
+            )
+        else:
+            self.log.debug(
+                "_merge_env_for_overlay: all required vars for '%s' already present.", overlay
+            )
+
     # ------------------------------------------------------------------
     # Secret validation
     # ------------------------------------------------------------------
@@ -1098,11 +1200,11 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # Main dispatch
     # ------------------------------------------------------------------
-
     def run(self):
         gpu = getattr(self.args, "gpu", False)
         ollama = getattr(self.args, "ollama", False)
         vllm = getattr(self.args, "vllm", False)
+        training = getattr(self.args, "training", False)
         mode = getattr(self.args, "mode", "up")
 
         suffix = ""
@@ -1114,6 +1216,9 @@ class Orchestrator:
             suffix = " + Ollama"
         elif vllm:
             suffix = " + vLLM"
+        if training:
+            suffix += " + Sovereign Forge"
+
         self.log.info("Mode: %s%s", mode, suffix)
 
         if getattr(self.args, "nuke", False):
@@ -1159,6 +1264,11 @@ def main(
         show_default=True,
     ),
     # --- GPU service flags — independent opt-in ---
+    training: bool = typer.Option(
+        False,
+        "--training",
+        help="Start Sovereign Forge training stack. Requires NVIDIA GPU and nvidia-container-toolkit.",
+    ),
     gpu: bool = typer.Option(
         False,
         "--gpu",
@@ -1267,6 +1377,7 @@ def main(
         down = True
 
     args = SimpleNamespace(
+        training=training,
         mode=mode,
         gpu=gpu,
         ollama=ollama,
@@ -1417,7 +1528,7 @@ def bootstrap_admin(
 
     Safe to re-run: existing users and keys are detected and left untouched.
     """
-    args = SimpleNamespace(verbose=verbose, gpu=False, ollama=False, vllm=False)
+    args = SimpleNamespace(verbose=verbose, gpu=False, ollama=False, vllm=False, training=False)
     o = Orchestrator(args)
     o.exec_bootstrap_admin(db_url=db_url)
 
