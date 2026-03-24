@@ -9,6 +9,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   # ──────────────────────────────────────────────────────────────────────────
   # Lint & Test
@@ -52,6 +55,10 @@ jobs:
         run: |
           docker compose -f docker-compose.yml config --quiet --no-interpolate
           docker compose -f docker-compose.yml -f docker-compose.gpu.yml config --quiet --no-interpolate
+          docker compose -f docker-compose.yml -f docker-compose.ollama.yml config --quiet --no-interpolate
+          docker compose -f docker-compose.yml -f docker-compose.vllm.yml config --quiet --no-interpolate
+          docker compose -f docker-compose.yml -f docker-compose.training.yml config --quiet --no-interpolate
+          docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.training.yml config --quiet --no-interpolate
 
   # ──────────────────────────────────────────────────────────────────────────
   # Release
