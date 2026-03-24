@@ -1,3 +1,10 @@
+## [1.24.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.24.0...v1.24.1) (2026-03-24)
+
+
+### Bug Fixes
+
+* resolve ruff linting issues (E722, F841, F401) ([9ca44bc](https://github.com/project-david-ai/projectdavid-platform/commit/9ca44bcc2c037c6e56a2693b270fa06dbb9628f9))
+
 # [1.24.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.23.1...v1.24.0) (2026-03-24)
 
 
