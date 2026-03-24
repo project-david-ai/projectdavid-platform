@@ -1,3 +1,15 @@
+# [1.23.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.22.0...v1.23.0) (2026-03-24)
+
+
+### Features
+
+* add docker-compose.training.yml overlay for Sovereign Forge ([cb59b8d](https://github.com/project-david-ai/projectdavid-platform/commit/cb59b8d8b71ab9c3f8c15b08af95e0843c836af7))
+* add port conflict detection for --training overlay ([bb58a85](https://github.com/project-david-ai/projectdavid-platform/commit/bb58a859d9af23c144034571e48abac30946e891))
+* complete Sovereign Forge integration — four-step rollout ([57fd90a](https://github.com/project-david-ai/projectdavid-platform/commit/57fd90a6c9daf3f53ecbb36e6d4753df82930001))
+* complete Sovereign Forge integration — four-step rollout ([28baa6d](https://github.com/project-david-ai/projectdavid-platform/commit/28baa6d04b3d98367fd3d47b7a3882f4fb3b6eb3))
+* complete Sovereign Forge integration — four-step rollout ([1b4e0d1](https://github.com/project-david-ai/projectdavid-platform/commit/1b4e0d11f1c57c5c6cd55db9da53d529c0d2b83a))
+* integrate Sovereign Forge training stack as opt-in overlay ([bb860a9](https://github.com/project-david-ai/projectdavid-platform/commit/bb860a98f13f6687489c14c1b5d478210d8940c0))
+
 # [1.22.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.21.0...v1.22.0) (2026-03-16)
 
 
