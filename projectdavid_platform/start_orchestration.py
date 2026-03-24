@@ -300,7 +300,7 @@ class Orchestrator:
                 shell=self.is_windows,
                 **kwargs,
             )
-        except subprocess.CalledProcessError as e:
+        except subprocess.CalledProcessError:
             self.log.error("Command failed: %s", " ".join(cmd_list))
             raise
 
