@@ -9,15 +9,12 @@ import importlib.resources
 import logging
 import os
 import platform as _platform
-import re
 import secrets
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List, Optional
 from urllib.parse import quote_plus
 
 import typer
