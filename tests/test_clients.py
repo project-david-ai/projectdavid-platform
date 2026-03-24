@@ -1,5 +1,4 @@
 # tests/test_dummy.py
-import pytest
 
 
 def test_always_passes():
