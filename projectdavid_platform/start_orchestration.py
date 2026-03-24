@@ -63,9 +63,6 @@ import typer
 #   Ray discovers the node automatically — no code changes required.
 
 
-
-
-
 # ---------------------------------------------------------------------------
 # Container guard
 # ---------------------------------------------------------------------------
@@ -1032,7 +1029,7 @@ class Orchestrator:
 
             # Inject at end of file with a section comment on first injection
             if not injected:
-                content += f"\n# Added by pdavid --training overlay\n"
+                content += "\n# Added by pdavid --training overlay\n"
             content += f"{key}={default}\n"
             os.environ[key] = default
             injected.append(key)
