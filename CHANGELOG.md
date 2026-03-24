@@ -1,3 +1,21 @@
+# [1.24.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.23.1...v1.24.0) (2026-03-24)
+
+
+### Bug Fixes
+
+* resolve ruff linting issues (E722, F841, F401) ([f624543](https://github.com/project-david-ai/projectdavid-platform/commit/f624543013f103beb43a15047ea1b33f9872966e))
+* resolve ruff linting issues (E722, F841, F401) ([9216f64](https://github.com/project-david-ai/projectdavid-platform/commit/9216f642da0c7961caaf56ede8db8194250a8b9d))
+* resolve ruff linting issues (E722, F841, F401) ([4a35886](https://github.com/project-david-ai/projectdavid-platform/commit/4a35886d1848b5bd36cdd0d37ba4faa7c8edfa31))
+* resolve ruff linting issues (E722, F841, F401) ([b6804eb](https://github.com/project-david-ai/projectdavid-platform/commit/b6804ebf478fe14651ed0b5954a5f419ee052e0c))
+* resolve ruff linting issues (E722, F841, F401) ([0134179](https://github.com/project-david-ai/projectdavid-platform/commit/01341798c3a1fd203a56b1d53f9129069ec067c3))
+* resolve ruff linting issues (E722, F841, F401) ([2879df6](https://github.com/project-david-ai/projectdavid-platform/commit/2879df6233a8883f2f4394d3ef898333ac6ea266))
+
+
+### Features
+
+* integrate sovereign forge training stack and silence secret output ([767998b](https://github.com/project-david-ai/projectdavid-platform/commit/767998bc1ba837dcf82cb43fbd6716fe1e9ac14a))
+* integrate sovereign forge training stack and silence secret output ([b1da01f](https://github.com/project-david-ai/projectdavid-platform/commit/b1da01f3033b74ff620b02638c4be711a69d933a))
+
 ## [1.23.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.23.0...v1.23.1) (2026-03-24)
 
 

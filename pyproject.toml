@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "projectdavid-platform"
-version = "1.23.1"
+version = "1.24.0"
 description = "Deployment orchestrator for the Project David / Entities platform"
 readme = "README.md"
 authors = [
