@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "projectdavid-platform"
-version = "1.25.1"
+version = "1.91.0"
+
+
 description = "Deployment orchestrator for the Project David / Entities platform"
 readme = "README.md"
 authors = [
@@ -60,7 +62,6 @@ dev = [
   "docker/nginx/nginx.conf",
   "docker/otel/otel-config.yaml",
   "docker/searxng/settings.yml",
-  "docker-compose.training.yml"
 ]
 
 [tool.setuptools.packages.find]
