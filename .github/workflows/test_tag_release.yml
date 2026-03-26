@@ -4,7 +4,7 @@ on:
   push:
     branches: ["**"]
   pull_request:
-    branches: [main, master]
+    branches: [main]
 
 permissions:
   contents: write
@@ -50,11 +50,9 @@ jobs:
         run: ruff check .
 
       - name: 🛡️ Mypy (Static Type Analysis)
-        # FIXED: Pointing to projectdavid_platform instead of src/
         run: mypy projectdavid_platform --ignore-missing-imports
 
       - name: 🛡️ Bandit (Security Analysis)
-        # FIXED: Pointing to projectdavid_platform instead of src/
         run: bandit -r projectdavid_platform -x tests/ -s B101
 
       - name: 🛡️ Safety (Dependency Scan)
@@ -83,7 +81,6 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install -e .
       - name: "✅ Run tests"
-        # FIXED: Pointing coverage to projectdavid_platform
         run: pytest tests/ --cov=projectdavid_platform --cov-report=term-missing
 
   # ──────────────────────────────────────────────────────────────────────────
@@ -93,7 +90,7 @@ jobs:
     name: "🚀 Tag, Build, and Publish"
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev')
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     steps:
       - name: "🕺 Checkout"
         uses: actions/checkout@v4
@@ -122,7 +119,7 @@ jobs:
       - name: "🧠 Decide Target"
         id: target
         run: |
-          if [[ "${{ github.ref_name }}" == "main" || "${{ github.ref_name }}" == "master" ]]; then
+          if [[ "${{ github.ref_name }}" == "main" ]]; then
             echo "token_name=PROD_PYPI_TOKEN" >> $GITHUB_OUTPUT
             echo "repo_url=${{ env.PROD_PYPI_URL }}" >> $GITHUB_OUTPUT
           else
