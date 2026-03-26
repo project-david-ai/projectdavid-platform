@@ -1,3 +1,21 @@
+# [1.26.0-dev.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.25.1...v1.26.0-dev.1) (2026-03-26)
+
+
+### Bug Fixes
+
+* add type annotation for injected list to satisfy mypy strict ([9ca2f91](https://github.com/project-david-ai/projectdavid-platform/commit/9ca2f91ba5980b8b5be5fc57781bd75809fd1def))
+* **ci:** update security scanner paths to projectdavid_platform ([ac6e110](https://github.com/project-david-ai/projectdavid-platform/commit/ac6e11031506f971d9017e15b9ecf3d804785568))
+* correct training-worker entrypoint and profile default ([5b02cd8](https://github.com/project-david-ai/projectdavid-platform/commit/5b02cd846f76e9a724875ef79167dd3149c88e44))
+* correct training-worker entrypoint and profile default ([138f2fd](https://github.com/project-david-ai/projectdavid-platform/commit/138f2fdab49381fdff389f8e09b0b461676c44ea))
+* correct training-worker entrypoint and profile default ([c17d3d0](https://github.com/project-david-ai/projectdavid-platform/commit/c17d3d0ce3f11fc30e550ed234c7f23767b068e3))
+* nosec B105 for intentional empty HF_TOKEN default ([d0e89e3](https://github.com/project-david-ai/projectdavid-platform/commit/d0e89e3fac491c4b17c0b85cb00d3aab4214a9ba))
+* sync start_orchestration source with _ensure_dockerignore and configure output ([3bfe152](https://github.com/project-david-ai/projectdavid-platform/commit/3bfe152313293f09e15e3fb03be4db47b9c4b6c5))
+
+
+### Features
+
+* sovereign cluster docker + CI gold standard fixes ([55bf0c4](https://github.com/project-david-ai/projectdavid-platform/commit/55bf0c43e1a190029854f19100de4414969ba4f4))
+
 ## [1.25.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.25.0...v1.25.1) (2026-03-24)
 
 
