@@ -60,7 +60,9 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -95,9 +97,7 @@ _DOCKER_INSTALL_URLS = {
     "linux": "https://docs.docker.com/engine/install/",
 }
 _DOCKER_COMPOSE_INSTALL_URL = "https://docs.docker.com/compose/install/"
-_NVIDIA_TOOLKIT_INSTALL_URL = (
-    "https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
-)
+_NVIDIA_TOOLKIT_INSTALL_URL = "https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
 
 
 # ---------------------------------------------------------------------------
@@ -169,10 +169,18 @@ class Orchestrator:
     ]
 
     _USER_REQUIRED = {
-        "HF_TOKEN": ("HF_TOKEN", "HuggingFace access token (required for gated models).", True),
+        "HF_TOKEN": (
+            "HF_TOKEN",
+            "HuggingFace access token (required for gated models).",
+            True,
+        ),
     }
 
-    _DANGEROUS_ROTATION = {"MYSQL_PASSWORD", "MYSQL_ROOT_PASSWORD", "SMBCLIENT_PASSWORD"}
+    _DANGEROUS_ROTATION = {
+        "MYSQL_PASSWORD",
+        "MYSQL_ROOT_PASSWORD",
+        "SMBCLIENT_PASSWORD",
+    }
     _REQUIRES_DOWN = {"SECRET_KEY", "DEFAULT_SECRET_KEY", "ADMIN_API_KEY"}
 
     _INSECURE_VALUES = {"default", "changeme", "your_secret_key_here", ""}
@@ -249,7 +257,9 @@ class Orchestrator:
 
         for key in self._GENERATED_SECRETS:
             env_values[key] = (
-                f"ad_{secrets.token_urlsafe(32)}" if "KEY" in key else secrets.token_hex(32)
+                f"ad_{secrets.token_urlsafe(32)}"
+                if "KEY" in key
+                else secrets.token_hex(32)
             )
 
         for key in self._GENERATED_TOOL_IDS:
@@ -257,7 +267,9 @@ class Orchestrator:
 
         db_pass = env_values.get("MYSQL_PASSWORD")
         escaped_pass = quote_plus(str(db_pass))
-        env_values["DATABASE_URL"] = f"mysql+pymysql://api_user:{escaped_pass}@db:3306/entities_db"
+        env_values["DATABASE_URL"] = (
+            f"mysql+pymysql://api_user:{escaped_pass}@db:3306/entities_db"
+        )
 
         try:
             env_values["PDAVID_VERSION"] = importlib.metadata.version(PACKAGE_NAME)
@@ -365,7 +377,9 @@ class Orchestrator:
         if getattr(self.args, "nuke", False):
             confirm = input("DANGER: This wipes ALL data. Type 'confirm nuke': ")
             if confirm == "confirm nuke":
-                self._run_command(["docker", "compose"] + self._compose_files() + ["down", "-v"])
+                self._run_command(
+                    ["docker", "compose"] + self._compose_files() + ["down", "-v"]
+                )
                 self.log.info("Data destroyed.")
             return
 
@@ -401,7 +415,9 @@ class Orchestrator:
 def main(
     ctx: typer.Context,
     mode: str = typer.Option("up", help="Action: up | build | logs"),
-    training: bool = typer.Option(False, "--training", help="Enable Sovereign Forge stack."),
+    training: bool = typer.Option(
+        False, "--training", help="Enable Sovereign Forge stack."
+    ),
     gpu: bool = typer.Option(False, "--gpu", help="Enable GPU overlays."),
     nuke: bool = typer.Option(False, "--nuke", help="Destroy everything."),
     pull: bool = typer.Option(False, "--pull", help="Pull latest images."),
