@@ -1042,7 +1042,7 @@ class Orchestrator:
             return
 
         content = env_path.read_text(encoding="utf-8")
-        injected = []
+        injected: list[str] = []
 
         for key, default in required.items():
             # Check both the file content and the live environment
