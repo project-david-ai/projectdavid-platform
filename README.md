@@ -17,6 +17,19 @@ Connect any model, anywhere. Run inference locally via Ollama or vLLM, or route 
 
 ---
 
+## Documentation
+
+| Topic | Link |
+|---|---|
+| Full Documentation | [docs.projectdavid.co.uk](https://docs.projectdavid.co.uk/docs) |
+| Platform Overview | [docs.projectdavid.co.uk/docs/platform-overview](https://docs.projectdavid.co.uk/docs/platform-overview) |
+| Configuration Reference | [docs.projectdavid.co.uk/docs/platform-configuration](https://docs.projectdavid.co.uk/docs/platform-configuration) |
+| Upgrading | [docs.projectdavid.co.uk/docs/platform-upgrading](https://docs.projectdavid.co.uk/docs/platform-upgrading) |
+| CLI Reference | [docs.projectdavid.co.uk/docs/projectdavid-platform-commands](https://docs.projectdavid.co.uk/docs/projectdavid-platform-commands) |
+| SDK Quick Start | [docs.projectdavid.co.uk/docs/sdk-quick-start](https://docs.projectdavid.co.uk/docs/sdk-quick-start) |
+| Sovereign Forge | [docs.projectdavid.co.uk/docs/1_sovereign-forge-cluster](https://docs.projectdavid.co.uk/docs/1_sovereign-forge-cluster) |
+
+---
 
 ## Installation
 
@@ -183,7 +196,7 @@ for event in stream.stream_events(model="hyperbolic/deepseek-ai/DeepSeek-V3"):
         print(event.content, end="", flush=True)
 ```
 
-**See the complete SDK reference [here](https://github.com/project-david-ai/projectdavid_docs/tree/master/src/pages/sdk).**
+**See the complete SDK reference at [docs.projectdavid.co.uk/docs/sdk-quick-start](https://docs.projectdavid.co.uk/docs/sdk-quick-start).**
 
 ---
 
@@ -253,7 +266,7 @@ Runtime dependencies: Docker Engine 24+, Docker Compose v2+, Python 3.9+. `nvidi
 | Stream logs | `pdavid --mode logs --follow` |
 | Destroy all stack data | `pdavid --nuke` |
 
-Full CLI reference [here](https://github.com/project-david-ai/projectdavid_docs/blob/master/src/pages/projectdavid-platform/projectdavid-platform-commands.md).
+Full CLI reference at [docs.projectdavid.co.uk/docs/projectdavid-platform-commands](https://docs.projectdavid.co.uk/docs/projectdavid-platform-commands).
 
 ---
 
@@ -267,6 +280,8 @@ pdavid configure --interactive
 
 Rotating `MYSQL_PASSWORD`, `MYSQL_ROOT_PASSWORD`, or `SMBCLIENT_PASSWORD` on a live stack requires a full down and volume clear. The CLI will warn you.
 
+Full configuration reference at [docs.projectdavid.co.uk/docs/platform-configuration](https://docs.projectdavid.co.uk/docs/platform-configuration).
+
 ---
 
 ## Upgrading
@@ -278,6 +293,8 @@ pdavid --mode up --pull
 
 After upgrading, `pdavid` will print a notice on the next run pointing to the changelog. Running `--pull` fetches the latest container images. Your data and secrets are not affected.
 
+Full upgrade guide at [docs.projectdavid.co.uk/docs/platform-upgrading](https://docs.projectdavid.co.uk/docs/platform-upgrading).
+
 ---
 
 ## Sovereign Forge — Private Training + Inference Mesh
@@ -287,7 +304,6 @@ Point it at any NVIDIA GPU — a laptop, a workstation, a gaming rig, or an H100
 rack — and it handles training job scheduling, model deployment, and inference
 routing across all of them simultaneously. Add a new node with one environment
 variable. Your data and models never leave your machines.
-
 
 ![Project David Cluster](https://raw.githubusercontent.com/project-david-ai/projectdavid-core/master/assets/svg/pd_cluster.svg)
 
@@ -299,7 +315,7 @@ pdavid --mode up --gpu --training  # full sovereign stack
 Adding `--training` to a running stack is safe — Docker Compose merges the overlay
 and only starts the new services, leaving everything else untouched.
 
-Full documentation → [Sovereign Forge](https://github.com/project-david-ai/projectdavid_docs)
+Full documentation at [docs.projectdavid.co.uk/docs/1_sovereign-forge-cluster](https://docs.projectdavid.co.uk/docs/1_sovereign-forge-cluster).
 
 ---
 
@@ -336,4 +352,4 @@ Your instance is unique, with unique secrets. We cannot see your conversations, 
 ## License
 
 Distributed under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/).
-Commercial licensing is available on request.
+Commercial licensing available — contact [licensing@projectdavid.co.uk](mailto:licensing@projectdavid.co.uk).
