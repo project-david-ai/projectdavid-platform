@@ -82,3 +82,8 @@ line-length = 88
 
 [tool.pytest.ini_options]
 addopts = "--ignore=tests/integration"
+
+[project.urls]
+Homepage = "https://github.com/project-david-ai/projectdavid-platform"
+Documentation = "https://docs.projectdavid.co.uk/docs/platform-overview"
+Changelog = "https://github.com/project-david-ai/projectdavid-platform/blob/main/CHANGELOG.md"
