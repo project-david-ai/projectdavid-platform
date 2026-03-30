@@ -1,3 +1,10 @@
+# [1.28.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.27.0...v1.28.0) (2026-03-30)
+
+
+### Features
+
+* --training flag starts vllm without ollama via _extra_services ([31d7b02](https://github.com/project-david-ai/projectdavid-platform/commit/31d7b02dcdb5e20e0493d5185993639701e030f6))
+
 # [1.26.0-dev.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.26.0-dev.1...v1.26.0-dev.2) (2026-03-27)
 
 
