@@ -668,16 +668,6 @@ class Orchestrator:
     # Utilities
     # ------------------------------------------------------------------
     def _compose_files(self) -> list:
-        """
-        Builds the compose file flag list for docker compose commands.
-
-        Flag behaviour:
-          --gpu      → base + gpu overlay (both ollama + vllm)
-          --ollama   → base + ollama overlay only
-          --vllm     → base + vllm overlay only
-          --training → base + training overlay (training-api + training-worker + Ray)
-          Flags are additive — any combination is valid.
-        """
         files = [
             "--project-directory",
             str(Path.cwd()),
@@ -699,8 +689,11 @@ class Orchestrator:
                 files += ["-f", self.ollama_compose]
             if vllm:
                 files += ["-f", self.vllm_compose]
+            # --training alone always includes vllm (without ollama)
+            if training and not vllm:
+                files += ["-f", self.vllm_compose]
 
-        # Training is independent of GPU inference overlays — always additive
+        # Training overlay is always additive
         if training:
             files += ["-f", self.training_compose]
 
