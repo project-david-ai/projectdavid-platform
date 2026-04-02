@@ -1,3 +1,15 @@
+# [1.29.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.28.0...v1.29.0) (2026-03-30)
+
+
+### Features
+
+* interactive Ray cluster join walkthrough on first --training invocation ([9322db3](https://github.com/project-david-ai/projectdavid-platform/commit/9322db3fabb2a5f3fa1fb41091b37ff99c59f393))
+
+
+### Reverts
+
+* remove vllm from --training flag, DeploymentSupervisor manages vllm lifecycle ([55c7a49](https://github.com/project-david-ai/projectdavid-platform/commit/55c7a498db0d747576e00c66b1efe7fabb1609b5))
+
 # [1.28.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.27.0...v1.28.0) (2026-03-30)
 
 
