@@ -1647,7 +1647,7 @@ class WorkerNodeOrchestrator:
         ]
 
         try:
-            result = self._run_command(cmd, check=True)
+            self._run_command(cmd, check=True)
             typer.echo("\n" + "=" * 60)
             typer.echo("  ✓ Worker node started successfully.")
             typer.echo(f"  Container  : inference_worker_{self.node_id}")
