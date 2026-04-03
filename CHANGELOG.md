@@ -1,46 +1,4 @@
-## [1.31.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.31.1...v1.31.2) (2026-04-06)
-
-
-### Bug Fixes
-
-* **projectdavid_platform/inference-worker:** add NET_ADMIN and tun device for kernel-mode Tailscale ([92c0a89](https://github.com/project-david-ai/projectdavid-platform/commit/92c0a89b8148a8a6245173995a4285580f6b16f2))
-
-## [1.31.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.31.0...v1.31.1) (2026-04-06)
-
-
-### Bug Fixes
-
-* **inference-worker:** add NET_ADMIN and tun device for kernel-mode Tailscale ([0ec9c7b](https://github.com/project-david-ai/projectdavid-platform/commit/0ec9c7b8ca9ac7cf66f09379852dd7b66fb6274f))
-
-# [1.31.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.30.3...v1.31.0) (2026-04-05)
-
-
-### Features
-
-* **platform:** expose Redis port and add Tailscale env vars for scale-out worker nodes ([039eac5](https://github.com/project-david-ai/projectdavid-platform/commit/039eac599e35cb7606ac397ce39eb09d6f7715b0))
-
-## [1.30.3](https://github.com/project-david-ai/projectdavid-platform/compare/v1.30.2...v1.30.3) (2026-04-05)
-
-
-### Bug Fixes
-
-* remove /.dockerenv guard, respect RAY_NODE_IP_ADDRESS in ray.init() ([7344396](https://github.com/project-david-ai/projectdavid-platform/commit/73443969263d26b07706e326c56aec0e27fa77a7))
-
-## [1.30.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.30.1...v1.30.2) (2026-04-04)
-
-
-### Bug Fixes
-
-* **platform:** trigger release build ([d6478c5](https://github.com/project-david-ai/projectdavid-platform/commit/d6478c5c7802ae3f5a3a7f4887d46dc094018393))
-
-## [1.30.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.30.0...v1.30.1) (2026-04-04)
-
-
-### Bug Fixes
-
-* **deps:** trigger release for pinned image digests ([e98def3](https://github.com/project-david-ai/projectdavid-platform/commit/e98def35ee1696078c2fa26a5774350b7f4bdaee))
-
-# [1.30.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.29.0...v1.30.0) (2026-04-03)
+# [1.30.0-dev.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.29.0...v1.30.0-dev.1) (2026-04-03)
 
 
 ### Bug Fixes
@@ -50,7 +8,6 @@
 
 ### Features
 
-* migrate to Ray Serve architecture with profile-based training stack ([25b9c1b](https://github.com/project-david-ai/projectdavid-platform/commit/25b9c1be949616dbc0e969749a67b0680fde02a0))
 * migrate to Ray Serve architecture with profile-based training stack ([497ac8d](https://github.com/project-david-ai/projectdavid-platform/commit/497ac8da2f3855277ecd75322c17147c5ac467a8))
 * migrate to Ray Serve architecture with profile-based training stack ([e4b3983](https://github.com/project-david-ai/projectdavid-platform/commit/e4b39833d6f0525ce214a81861456f55ce5e8d54))
 
