@@ -61,15 +61,21 @@ pdavid --mode up
 
 On first run this will generate a `.env` file with unique cryptographically secure secrets, prompt for optional values, pull all required Docker images, and start the full stack in detached mode.
 
-To start with local GPU inference (Ollama or vLLM):
+To start with local GPU inference via Ollama:
 
 ```bash
-pdavid --mode up --ollama   # Ollama only
-pdavid --mode up --vllm     # vLLM only
-pdavid --mode up --gpu      # Both
+pdavid --mode up --ollama
 ```
 
 Requires an NVIDIA GPU with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) installed.
+
+To start the full Sovereign Forge training and inference mesh:
+
+```bash
+pdavid --mode up --training
+```
+
+This starts the training pipeline, Ray cluster, and the Ray Serve inference worker. See [Sovereign Forge](#sovereign-forge--private-training--inference-mesh) below.
 
 ---
 
@@ -229,10 +235,10 @@ See the [reference backend](https://github.com/project-david-ai/reference-backen
 | `jaeger` | `jaegertracing/all-in-one` | Distributed tracing UI |
 | `samba` | `dperson/samba` | File sharing for uploaded documents |
 | `nginx` | `nginx:alpine` | Reverse proxy — single public entry point on port 80 |
-| `ollama` | `ollama/ollama` | Local LLM inference (opt-in, `--ollama` or `--gpu`) |
-| `vllm` | `vllm/vllm-openai` | High-throughput GPU inference (opt-in, `--vllm` or `--gpu`) |
+| `ollama` | `ollama/ollama` | Local LLM inference (opt-in, `--ollama`) |
+| `inference-worker` | `thanosprime/projectdavid-core-inference-worker` | Ray HEAD node + Ray Serve inference mesh (opt-in, `--training`) |
+| `training-worker` | `thanosprime/projectdavid-core-training-worker` | Fine-tuning job runner (opt-in, `--training`) |
 | `training-api` | `thanosprime/projectdavid-core-training-api` | Fine-tuning REST API (opt-in, `--training`) |
-| `training-worker` | `thanosprime/projectdavid-core-training-worker` | GPU worker + Ray head node (opt-in, `--training`) |
 
 ---
 
@@ -241,9 +247,9 @@ See the [reference backend](https://github.com/project-david-ai/reference-backen
 | Resource | Minimum | Notes |
 |---|---|---|
 | CPU | 4 cores | 8+ recommended |
-| RAM | 16GB | 32GB+ if running vLLM |
+| RAM | 16GB | 32GB+ if running the inference mesh |
 | Disk | 50GB free | SSD recommended |
-| GPU | — | Nvidia 8GB+ VRAM, optional, required only for vLLM / Ollama / training |
+| GPU | — | Nvidia 8GB+ VRAM, optional, required only for Ollama / Sovereign Forge |
 
 Runtime dependencies: Docker Engine 24+, Docker Compose v2+, Python 3.9+. `nvidia-container-toolkit` required only for GPU services.
 
@@ -255,15 +261,14 @@ Runtime dependencies: Docker Engine 24+, Docker Compose v2+, Python 3.9+. `nvidi
 |---|---|
 | Start the stack | `pdavid --mode up` |
 | Start with Ollama | `pdavid --mode up --ollama` |
-| Start with vLLM | `pdavid --mode up --vllm` |
-| Start with both GPU services | `pdavid --mode up --gpu` |
 | Start Sovereign Forge | `pdavid --mode up --training` |
-| Full sovereign stack | `pdavid --mode up --gpu --training` |
+| Start Sovereign Forge + Ollama | `pdavid --mode up --training --ollama` |
 | Pull latest images | `pdavid --mode up --pull` |
 | Stop the stack | `pdavid --mode down_only` |
 | Stop and remove all volumes | `pdavid --mode down_only --clear-volumes` |
 | Force recreate containers | `pdavid --mode up --force-recreate` |
 | Stream logs | `pdavid --mode logs --follow` |
+| Add a GPU worker node | `pdavid worker --join <head-node-ip>` |
 | Destroy all stack data | `pdavid --nuke` |
 
 Full CLI reference at [docs.projectdavid.co.uk/docs/projectdavid-platform-commands](https://docs.projectdavid.co.uk/docs/projectdavid-platform-commands).
@@ -274,7 +279,7 @@ Full CLI reference at [docs.projectdavid.co.uk/docs/projectdavid-platform-comman
 
 ```bash
 pdavid configure --set HF_TOKEN=hf_abc123
-pdavid configure --set VLLM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct
+pdavid configure --set TRAINING_PROFILE=standard
 pdavid configure --interactive
 ```
 
@@ -299,21 +304,34 @@ Full upgrade guide at [docs.projectdavid.co.uk/docs/platform-upgrading](https://
 
 ## Sovereign Forge — Private Training + Inference Mesh
 
-ProjectDavid includes an opt-in fine-tuning and inference cluster built on Ray.
+Project David includes an opt-in fine-tuning and inference cluster built on Ray Serve.
 Point it at any NVIDIA GPU — a laptop, a workstation, a gaming rig, or an H100
 rack — and it handles training job scheduling, model deployment, and inference
-routing across all of them simultaneously. Add a new node with one environment
-variable. Your data and models never leave your machines.
+routing across all of them simultaneously. Your data and models never leave your
+machines.
 
 ![Project David Cluster](https://raw.githubusercontent.com/project-david-ai/projectdavid-core/master/assets/svg/pd_cluster.svg)
 
 ```bash
-pdavid --mode up --training        # training pipeline + Ray cluster
-pdavid --mode up --gpu --training  # full sovereign stack
+pdavid --mode up --training
 ```
 
-Adding `--training` to a running stack is safe — Docker Compose merges the overlay
-and only starts the new services, leaving everything else untouched.
+This starts three services under a Docker Compose profile:
+
+- **`inference-worker`** — Ray HEAD node. Owns the GPU on this machine. Runs Ray Serve and hosts the InferenceReconciler. All vLLM inference is managed here. The main API's `VLLM_BASE_URL` points to this container.
+- **`training-worker`** — Fine-tuning job runner. Manages the training job lifecycle via Redis queue.
+- **`training-api`** — REST API for datasets, training jobs, and the model registry.
+
+### Scale-out — adding a second GPU machine
+
+Run this on machine 2, 3, or N. No compose files or full stack installation needed on worker machines — just Docker and the NVIDIA Container Toolkit.
+
+```bash
+pip install projectdavid-platform
+pdavid worker --join <head-node-ip>
+```
+
+Ray discovers the new node automatically and the InferenceReconciler distributes load across all available GPUs.
 
 Full documentation at [docs.projectdavid.co.uk/docs/1_sovereign-forge-cluster](https://docs.projectdavid.co.uk/docs/1_sovereign-forge-cluster).
 
@@ -323,6 +341,7 @@ Full documentation at [docs.projectdavid.co.uk/docs/1_sovereign-forge-cluster](h
 
 - [thanosprime/projectdavid-core-api](https://hub.docker.com/r/thanosprime/projectdavid-core-api)
 - [thanosprime/projectdavid-core-sandbox](https://hub.docker.com/r/thanosprime/projectdavid-core-sandbox)
+- [thanosprime/projectdavid-core-inference-worker](https://hub.docker.com/r/thanosprime/projectdavid-core-inference-worker)
 - [thanosprime/projectdavid-core-training-api](https://hub.docker.com/r/thanosprime/projectdavid-core-training-api)
 - [thanosprime/projectdavid-core-training-worker](https://hub.docker.com/r/thanosprime/projectdavid-core-training-worker)
 
