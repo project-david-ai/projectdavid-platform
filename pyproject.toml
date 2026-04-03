@@ -53,15 +53,13 @@ dev = [
 
 [tool.setuptools.package-data]
 "projectdavid_platform" = [
-  "py.typed",             # Added for PEP 561 support
+  "py.typed",
   "docker-compose.yml",
-  "docker-compose.gpu.yml",
   "docker-compose.ollama.yml",
-  "docker-compose.vllm.yml",
-  ".env.example",
   "docker/nginx/nginx.conf",
   "docker/otel/otel-config.yaml",
   "docker/searxng/settings.yml",
+  ".env.example",
 ]
 
 [tool.setuptools.packages.find]

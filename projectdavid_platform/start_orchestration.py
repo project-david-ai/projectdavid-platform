@@ -1,9 +1,3 @@
-# start_orchestration.py
-#
-# Deployment orchestrator for the Project David / Entities platform.
-#
-# VERSION: 1.23.4-Full-Fix-with-Entrypoint
-#
 from __future__ import annotations
 
 import importlib.metadata
@@ -14,6 +8,7 @@ import platform as _platform
 import re
 import secrets
 import shutil
+import socket as _socket
 import subprocess  # nosec B404
 import sys
 import time
@@ -40,27 +35,36 @@ import typer
 #   pdavid --mode logs --follow             # Tail logs
 #   pdavid --mode down_only                 # Stop the stack
 #
-#   GPU INFERENCE (opt-in, requires NVIDIA GPU + nvidia-container-toolkit)
-#   pdavid --mode up --ollama               # Ollama only
-#   pdavid --mode up --vllm                 # vLLM only (static server)
-#   pdavid --mode up --gpu                  # Both Ollama + vLLM
+#   GPU INFERENCE via Ollama (opt-in, requires NVIDIA GPU)
+#   pdavid --mode up --ollama               # Ollama local inference
 #
-#   SOVEREIGN FORGE — Training + Inference Mesh (opt-in, requires NVIDIA GPU)
-#   pdavid --mode up --training             # Training pipeline + Ray cluster
-#   pdavid --mode up --training --vllm      # + static vLLM inference server
-#   pdavid --mode up --gpu --training       # Full sovereign stack
+#   SOVEREIGN FORGE — Training + Ray inference mesh (opt-in, requires NVIDIA GPU)
+#   pdavid --mode up --training             # Full training stack
+#                                           # (training-api + training-worker + inference-worker)
+#                                           # Prompts: head node or worker node
+#
+#   MULTI-NODE SCALE-OUT — Adding a second GPU machine to the Ray cluster
+#   pdavid worker --join 192.168.1.10       # Machine 2: joins as inference worker
+#   pdavid worker --join 192.168.1.10 --ray-port 10001 --serve-port 8000
 #
 #   CONFIGURATION
 #   pdavid configure --set HF_TOKEN=hf_abc123
 #   pdavid configure --set TRAINING_PROFILE=standard
-#   pdavid configure --set RAY_ADDRESS=ray://192.168.1.10:10001
 #   pdavid configure --interactive
 #   pdavid bootstrap-admin
 #
-# SCALE-OUT (adding a second GPU node to the Ray cluster):
-#   On the remote machine, set RAY_ADDRESS=ray://<head_ip>:10001 in .env
-#   then: docker compose -f docker-compose.yml -f docker-compose.training.yml up -d training-worker
-#   Ray discovers the node automatically — no code changes required.
+# ARCHITECTURE NOTE — Ray Serve replaces static vLLM container
+# ---------------------------------------------------------------
+#   inference-worker  → Ray HEAD node. Owns the GPU. Runs Ray Serve.
+#                       Hosts the InferenceReconciler. VLLM_BASE_URL
+#                       on the main api points here (port 8000).
+#   training-worker   → Redis/subprocess runner. No Ray, no GPU ownership.
+#                       Manages fine-tuning job lifecycle.
+#   training-api      → REST API for datasets, jobs, model registry.
+#
+# The --vllm and --gpu flags are deprecated. vLLM is now managed inside
+# Ray Serve by the InferenceReconciler. There is no standalone vllm container.
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -110,19 +114,16 @@ DEFAULT_DB_SERVICE_NAME = "db"
 API_SERVICE_NAME = "api"
 API_CONTAINER_NAME = "fastapi_cosmic_catalyst"
 BASE_COMPOSE_FILE = "docker-compose.yml"
-GPU_COMPOSE_FILE = "docker-compose.gpu.yml"
 OLLAMA_COMPOSE_FILE = "docker-compose.ollama.yml"
-VLLM_COMPOSE_FILE = "docker-compose.vllm.yml"
-TRAINING_COMPOSE_FILE = "docker-compose.training.yml"
 PACKAGE_NAME = "projectdavid_platform"
 CHANGELOG_URL = "https://github.com/project-david-ai/platform/blob/master/CHANGELOG.md"
 
+# Inference-worker container name — used for scale-out health checks
+INFERENCE_WORKER_CONTAINER = "inference_worker"
+
 _BUNDLED_CONFIGS = [
-    ("docker-compose.training.yml", "docker-compose.training.yml"),
     ("docker-compose.yml", "docker-compose.yml"),
     ("docker-compose.ollama.yml", "docker-compose.ollama.yml"),
-    ("docker-compose.vllm.yml", "docker-compose.vllm.yml"),
-    ("docker-compose.gpu.yml", "docker-compose.gpu.yml"),
     ("docker/nginx/nginx.conf", "docker/nginx/nginx.conf"),
     ("docker/otel/otel-config.yaml", "docker/otel/otel-config.yaml"),
     ("docker/searxng/settings.yml", "docker/searxng/settings.yml"),
@@ -135,16 +136,6 @@ _DOCKER_INSTALL_URLS = {
 }
 _DOCKER_COMPOSE_INSTALL_URL = "https://docs.docker.com/compose/install/"
 _NVIDIA_TOOLKIT_INSTALL_URL = "https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
-
-_OWNED_SERVICES = {
-    "api": API_CONTAINER_NAME,
-    "sandbox": "sandbox_api",
-}
-
-_OWNED_IMAGES = {
-    "api": "thanosprime/projectdavid-core-api",
-    "sandbox": "thanosprime/projectdavid-core-sandbox",
-}
 
 # ---------------------------------------------------------------------------
 # Compose file path resolution
@@ -180,13 +171,12 @@ _TYPER_HELP = (
     "Install:    pip install projectdavid-platform\n\n"
     "Base stack: pdavid --mode up\n"
     "Update:     pdavid --mode up --pull\n\n"
-    "GPU inference (opt-in):\n"
-    "  Ollama:   pdavid --mode up --ollama\n"
-    "  vLLM:     pdavid --mode up --vllm\n"
-    "  Both:     pdavid --mode up --gpu\n\n"
-    "Sovereign Forge — training + inference mesh (opt-in):\n"
-    "  Training: pdavid --mode up --training\n"
-    "  Full:     pdavid --mode up --gpu --training\n\n"
+    "Ollama inference (opt-in):\n"
+    "  pdavid --mode up --ollama\n\n"
+    "Sovereign Forge — training + Ray inference mesh (opt-in):\n"
+    "  pdavid --mode up --training\n\n"
+    "Scale-out — add a second GPU node to the cluster:\n"
+    "  pdavid worker --join <head-node-ip>\n\n"
     "Config:     pdavid configure --set HF_TOKEN=hf_abc123\n"
     "Admin:      pdavid bootstrap-admin"
 )
@@ -206,8 +196,6 @@ class Orchestrator:
     _ENV_FILE = ".env"
     _ENV_EXAMPLE_FILE = ".env.example"
 
-    # ADMIN_API_KEY is intentionally excluded here.
-    # It is generated and written only when `bootstrap-admin` is explicitly called.
     _GENERATED_SECRETS = [
         "SIGNED_URL_SECRET",
         "API_KEY",
@@ -232,7 +220,7 @@ class Orchestrator:
             "HF_TOKEN",
             (
                 "HuggingFace personal access token.\n"
-                "  Required only for downloading gated models via vLLM.\n"
+                "  Required for downloading gated models and pushing fine-tuned adapters.\n"
                 "  Get one at: https://huggingface.co/settings/tokens"
             ),
             True,
@@ -266,19 +254,28 @@ class Orchestrator:
     }
 
     _DEFAULT_VALUES = {
-        "TRAINING_PROFILE": "laptop",
-        # Ray: blank = this node starts as Ray head.
-        # Set to ray://<head_ip>:10001 to join an existing cluster.
+        # ── Node identity ───────────────────────────────────────────────
+        "NODE_ID": f"node_{_socket.gethostname()}",
+        # ── Ray / Sovereign Forge ───────────────────────────────────────
+        # RAY_ADDRESS: blank = this node starts as Ray HEAD.
+        # Set to ray://<head_ip>:<port> on worker nodes.
         "RAY_ADDRESS": "",
         "RAY_DASHBOARD_PORT": "8265",
-        "VLLM_EXTRA_FLAGS": "",
+        "RAY_CLIENT_SERVER_PORT": "10001",
+        "TRAINING_PROFILE": "laptop",
+        # ── Inference ───────────────────────────────────────────────────
+        # VLLM_BASE_URL points to the inference-worker Ray Serve HTTP server.
+        # There is no standalone vllm container in this architecture.
+        "VLLM_BASE_URL": "http://inference_worker:8000",
+        "OLLAMA_BASE_URL": "http://ollama:11434/v1",
+        # ── Base URLs ───────────────────────────────────────────────────
         "ASSISTANTS_BASE_URL": "http://localhost:80",
         "SANDBOX_SERVER_URL": "http://sandbox:8000",
         "DOWNLOAD_BASE_URL": "http://localhost:80/v1/files/download",
-        "HF_TOKEN": "",
-        # nosec B105 — empty string is intentional default; token is user-supplied via pdavid configure
+        # ── HuggingFace ─────────────────────────────────────────────────
+        "HF_TOKEN": "",  # nosec B105 — user-supplied via pdavid configure
         "HF_CACHE_PATH": "",
-        "VLLM_MODEL": "Qwen/Qwen2.5-VL-3B-Instruct",
+        # ── Platform settings ───────────────────────────────────────────
         "BASE_URL_HEALTH": "http://localhost:80/v1/health",
         "SHELL_SERVER_URL": "ws://sandbox:8000/ws/computer",
         "SHELL_SERVER_EXTERNAL_URL": "ws://localhost:8000/ws/computer",
@@ -286,42 +283,57 @@ class Orchestrator:
         "DISABLE_FIREJAIL": "true",
         "SHARED_PATH": "./shared_data",
         "AUTO_MIGRATE": "1",
+        # ── Database ─────────────────────────────────────────────────────
         "MYSQL_HOST": DEFAULT_DB_SERVICE_NAME,
         "MYSQL_PORT": DEFAULT_DB_CONTAINER_PORT,
         "MYSQL_DATABASE": "entities_db",
         "MYSQL_USER": "api_user",
         "REDIS_URL": "redis://redis:6379/0",
+        # ── Admin ────────────────────────────────────────────────────────
         "ADMIN_USER_EMAIL": "admin@example.com",
         "ADMIN_USER_ID": "",
         "ADMIN_KEY_PREFIX": "",
+        # ── SMB ──────────────────────────────────────────────────────────
         "SMBCLIENT_SERVER": "samba_server",
         "SMBCLIENT_SHARE": "cosmic_share",
         "SMBCLIENT_USERNAME": "samba_user",
         "SMBCLIENT_PORT": "445",
         "SAMBA_USERID": "1000",
         "SAMBA_GROUPID": "1000",
-        "LOG_LEVEL": "INFO",
-        "PYTHONUNBUFFERED": "1",
-        # Inference provider base URLs — required for hosted model routing.
-        # Add your API keys via: pdavid configure --set HYPERBOLIC_API_KEY=...
+        # ── Inference providers ───────────────────────────────────────────
         "HYPERBOLIC_BASE_URL": "https://api.hyperbolic.xyz/v1",
         "TOGETHER_BASE_URL": "https://api.together.xyz/v1",
+        # ── Misc ─────────────────────────────────────────────────────────
+        "LOG_LEVEL": "INFO",
+        "PYTHONUNBUFFERED": "1",
     }
 
     _ENV_STRUCTURE = {
+        "Node Identity": [
+            "NODE_ID",
+        ],
         "Base URLs": [
             "ASSISTANTS_BASE_URL",
             "SANDBOX_SERVER_URL",
             "DOWNLOAD_BASE_URL",
         ],
-        "AI Model Configuration": [
-            "HF_TOKEN",
-            "HF_CACHE_PATH",
-            "VLLM_MODEL",
+        "Inference": [
+            "VLLM_BASE_URL",
+            "OLLAMA_BASE_URL",
         ],
         "Inference Providers": [
             "HYPERBOLIC_BASE_URL",
             "TOGETHER_BASE_URL",
+        ],
+        "AI Model Configuration": [
+            "HF_TOKEN",
+            "HF_CACHE_PATH",
+        ],
+        "Sovereign Forge": [
+            "RAY_ADDRESS",
+            "RAY_DASHBOARD_PORT",
+            "RAY_CLIENT_SERVER_PORT",
+            "TRAINING_PROFILE",
         ],
         "Database Configuration": [
             "DATABASE_URL",
@@ -368,11 +380,6 @@ class Orchestrator:
             "SAMBA_USERID",
             "SAMBA_GROUPID",
         ],
-        "Training Stack": [
-            "TRAINING_PROFILE",
-            "RAY_ADDRESS",
-            "RAY_DASHBOARD_PORT",
-        ],
         "Tool Identifiers": [
             "TOOL_CODE_INTERPRETER",
             "TOOL_WEB_SEARCH",
@@ -399,35 +406,30 @@ class Orchestrator:
         self.args = args
         self.is_windows = _platform.system() == "Windows"
         self.log = log
+
         if getattr(self.args, "verbose", False):
             self.log.setLevel(logging.DEBUG)
 
-        # Must run first — installs bundled configs and wins Docker race condition.
+        # Installs bundled configs before Docker gets a chance to create
+        # spurious directories in their place.
         self._ensure_config_files()
 
         self.base_compose = _resolve_compose_file(BASE_COMPOSE_FILE)
-        self.gpu_compose = _resolve_compose_file(GPU_COMPOSE_FILE)
         self.ollama_compose = _resolve_compose_file(OLLAMA_COMPOSE_FILE)
-        self.vllm_compose = _resolve_compose_file(VLLM_COMPOSE_FILE)
-
-        self.training_compose = _resolve_compose_file(TRAINING_COMPOSE_FILE)
 
         self.compose_config = self._load_compose_config()
         self._check_for_required_env_file()
         self._configure_shared_path()
         self._configure_hf_cache_path()
-        # ----------------------------------------
-        # Inject any missing overlay-specific env vars into .env
-        # This runs before _handle_up() so the vars are live in the environment
-        # before docker compose reads them.
-        # -----------------------------------------
+        self._ensure_node_id()
+
         if getattr(self.args, "training", False):
-            self._merge_env_for_overlay("training")
+            self._merge_env_for_training()
 
         self._ensure_dockerignore()
 
     # ------------------------------------------------------------------
-    # .env path helpers
+    # .env path helper
     # ------------------------------------------------------------------
 
     @property
@@ -439,19 +441,6 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def _check_version_upgrade(self) -> None:
-        """
-        Compare the installed package version against PDAVID_VERSION in .env.
-
-        If they differ the user has upgraded via pip since the last run.
-        Prints a notice with a changelog link and updates PDAVID_VERSION in
-        .env so the notice only fires once per upgrade.
-
-        Never pulls images automatically — the user decides when to apply
-        the update via: pdavid --mode up --pull
-
-        The compose file always uses :latest so no image tag coupling exists.
-        PDAVID_VERSION in .env is used solely for this notice.
-        """
         try:
             installed = importlib.metadata.version("projectdavid-platform")
         except importlib.metadata.PackageNotFoundError:
@@ -460,14 +449,12 @@ class Orchestrator:
         env_version = os.environ.get("PDAVID_VERSION", "").strip()
 
         if not env_version:
-            # First run — write the version silently, no notice needed.
             self._write_pdavid_version(installed)
             return
 
         if env_version == installed:
             return
 
-        # Version mismatch — user has upgraded via pip.
         typer.echo("\n" + "=" * 60)
         typer.echo("  Platform update detected")
         typer.echo("=" * 60)
@@ -481,12 +468,9 @@ class Orchestrator:
             "  Your data and secrets are not affected.\n"
         )
         typer.echo("=" * 60 + "\n")
-
-        # Update .env so the notice doesn't repeat on every run.
         self._write_pdavid_version(installed)
 
     def _write_pdavid_version(self, version: str) -> None:
-        """Write or update PDAVID_VERSION in .env in-place."""
         try:
             env_path = Path(self._ENV_FILE)
             if not env_path.exists():
@@ -501,11 +485,6 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def _ensure_config_files(self) -> None:
-        """
-        Copy bundled files into the user's CWD before Docker Compose starts.
-        Detects and replaces directories created by Docker's race condition.
-        Never overwrites existing files — local customisations are preserved.
-        """
         copied = []
 
         for pkg_rel, cwd_rel in _BUNDLED_CONFIGS:
@@ -571,7 +550,7 @@ class Orchestrator:
             system, "https://docs.docker.com/get-docker/"
         )
         typer.echo(
-            "\nDocker is not installed or not found in PATH.\n"
+            f"\nDocker is not installed or not found in PATH.\n"
             f"Install Docker for your platform: {install_url}\n"
             "Once installed, re-run: pdavid --mode up\n",
             err=True,
@@ -589,7 +568,7 @@ class Orchestrator:
             return True
         except (subprocess.CalledProcessError, FileNotFoundError):
             typer.echo(
-                "\nThe Docker Compose plugin is not available.\n"
+                f"\nThe Docker Compose plugin is not available.\n"
                 f"Install it: {_DOCKER_COMPOSE_INSTALL_URL}\n"
                 "Once installed, re-run: pdavid --mode up\n",
                 err=True,
@@ -609,7 +588,6 @@ class Orchestrator:
             return False
 
     def _validate_gpu_prereqs(self, flag: str) -> bool:
-        """Validate NVIDIA prereqs before starting any GPU service."""
         if self._has_nvidia_support():
             self.log.info("NVIDIA GPU support confirmed.")
             return True
@@ -632,42 +610,43 @@ class Orchestrator:
             return False
 
         training = getattr(self.args, "training", False)
+        ollama = getattr(self.args, "ollama", False)
+
         if training and not self._validate_gpu_prereqs("--training"):
             return False
-        # -------------------------------------------------------------------
-        # Port conflict check for --training overlay
-        # Format: {port: (description, "error"|"warn")}
-        # "error" = hard stop, "warn" = logged but not blocking
-        # (worker handles vLLM port eviction itself so 8001 is warn-only)
-        # ---------------------------------------------------------------------
+
         if training and not self._check_port_conflicts(
             {
                 9001: ("training-api", "error"),
                 8265: ("Ray dashboard", "error"),
-                10001: ("Ray client", "error"),
-                8001: ("vLLM spawn port", "warn"),
+                10001: ("Ray client server", "error"),
+                8002: ("inference-worker HTTP (Ray Serve)", "warn"),
             }
         ):
             return False
 
-        gpu = getattr(self.args, "gpu", False)
-        ollama = getattr(self.args, "ollama", False)
-        vllm = getattr(self.args, "vllm", False)
-
-        if gpu and not self._validate_gpu_prereqs("--gpu"):
-            return False
-        if ollama and not gpu and not self._validate_gpu_prereqs("--ollama"):
-            return False
-        if vllm and not gpu and not self._validate_gpu_prereqs("--vllm"):
+        if ollama and not self._validate_gpu_prereqs("--ollama"):
             return False
 
         self.log.debug("Preflight checks passed.")
         return True
 
     # ------------------------------------------------------------------
-    # Utilities
+    # Compose file and profile resolution
     # ------------------------------------------------------------------
+
     def _compose_files(self) -> list:
+        """
+        Builds the docker compose CLI fragment for file selection and profiles.
+
+        Architecture:
+          base stack  → -f docker-compose.yml
+          --ollama    → -f docker-compose.ollama.yml (overlay, adds ollama service)
+          --training  → --profile training
+                        Activates: training-api, training-worker, inference-worker
+                        inference-worker is the Ray HEAD / Ray Serve host.
+                        VLLM_BASE_URL on the main api points to it.
+        """
         files = [
             "--project-directory",
             str(Path.cwd()),
@@ -677,24 +656,17 @@ class Orchestrator:
             self.base_compose,
         ]
 
-        gpu = getattr(self.args, "gpu", False)
-        ollama = getattr(self.args, "ollama", False)
-        vllm = getattr(self.args, "vllm", False)
-        training = getattr(self.args, "training", False)
+        if getattr(self.args, "ollama", False):
+            files += ["-f", self.ollama_compose]
 
-        if gpu:
-            files += ["-f", self.gpu_compose]
-        else:
-            if ollama:
-                files += ["-f", self.ollama_compose]
-            if vllm:
-                files += ["-f", self.vllm_compose]
-
-        # Training overlay is always additive — vLLM lifecycle managed by DeploymentSupervisor
-        if training:
-            files += ["-f", self.training_compose]
+        if getattr(self.args, "training", False):
+            files += ["--profile", "training"]
 
         return files
+
+    # ------------------------------------------------------------------
+    # Utilities
+    # ------------------------------------------------------------------
 
     def _get_all_services(self) -> List[str]:
         if not self.compose_config:
@@ -711,7 +683,7 @@ class Orchestrator:
         **kwargs,
     ):
         if not suppress_logs:
-            self.log.info("Running: %s", " ".join(cmd_list))
+            self.log.info("Running: %s", " ".join(str(c) for c in cmd_list))
         try:
             result = subprocess.run(
                 cmd_list,
@@ -724,7 +696,9 @@ class Orchestrator:
             return result
         except subprocess.CalledProcessError as e:
             self.log.error(
-                "Command failed (code %s): %s", e.returncode, " ".join(cmd_list)
+                "Command failed (code %s): %s",
+                e.returncode,
+                " ".join(str(c) for c in cmd_list),
             )
             if e.stdout:
                 self.log.error("STDOUT:\n%s", e.stdout.strip())
@@ -734,7 +708,7 @@ class Orchestrator:
                 raise
             return e
         except Exception as e:
-            self.log.error("Error running %s: %s", " ".join(cmd_list), e)
+            self.log.error("Error running command: %s", e)
             raise
 
     def _ensure_dockerignore(self):
@@ -778,6 +752,24 @@ class Orchestrator:
         except Exception as e:
             self.log.error("Error parsing ports for %s: %s", service_name, e)
         return None
+
+    def _ensure_node_id(self) -> None:
+        """
+        Ensure NODE_ID is present in .env. Generated once from hostname,
+        never overwritten — gives each deployment a stable identity even
+        across restarts.
+        """
+        env_path = Path(self._ENV_FILE)
+        if not env_path.exists():
+            return
+        content = env_path.read_text(encoding="utf-8")
+        if re.search(r"^NODE_ID=", content, re.MULTILINE):
+            return
+        node_id = f"node_{_socket.gethostname()}"
+        content += f"\n# Auto-generated node identity\nNODE_ID={node_id}\n"
+        env_path.write_text(content, encoding="utf-8")
+        os.environ["NODE_ID"] = node_id
+        self.log.info("NODE_ID set to: %s", node_id)
 
     # ------------------------------------------------------------------
     # .env generation
@@ -884,8 +876,6 @@ class Orchestrator:
             )
             generation_log["HF_CACHE_PATH"] = f"Auto-resolved for {_platform.system()}"
 
-        # PDAVID_VERSION is stored in .env solely to power the upgrade notice.
-        # It is NOT used to pin image tags — the compose file always uses :latest.
         try:
             env_values["PDAVID_VERSION"] = importlib.metadata.version(
                 "projectdavid-platform"
@@ -996,153 +986,140 @@ class Orchestrator:
             os.environ["HF_CACHE_PATH"] = hf_path
             self.log.info("Defaulting HF_CACHE_PATH to: %s", hf_path)
 
-    def _merge_env_for_overlay(self, overlay: str) -> None:
+    # ------------------------------------------------------------------
+    # Training overlay env injection — head vs worker node dialog
+    # ------------------------------------------------------------------
+
+    def _merge_env_for_training(self) -> None:
         """
-        Safely injects variables required by a new overlay into an existing .env
-        without touching any values that are already set.
+        Injects Sovereign Forge env vars into .env without touching values
+        that are already set.
 
-        For the training overlay, if RAY_ADDRESS is not yet set and the terminal
-        is interactive, walks the operator through head vs worker node selection.
+        For first-time --training invocations on an interactive terminal,
+        walks the operator through head node vs worker node configuration.
 
-        Head node  → RAY_ADDRESS=""   → starts Ray cluster + dashboard
-        Worker node → RAY_ADDRESS set → joins cluster, no dashboard spawned
+        Head node   → RAY_ADDRESS=""          starts Ray cluster + dashboard
+        Worker node → RAY_ADDRESS=ray://...   joins existing cluster
         """
-        _OVERLAY_VARS = {
-            "training": {
-                "TRAINING_PROFILE": "laptop",
-                "RAY_DASHBOARD_PORT": "8265",
-            },
-            "ollama": {},
-            "vllm": {},
-            "gpu": {},
-        }
-
-        required = _OVERLAY_VARS.get(overlay, {})
-
         env_path = Path(self._ENV_FILE)
         if not env_path.exists():
             return
 
         content = env_path.read_text(encoding="utf-8")
-        injected: list[str] = []
+        injected: List[str] = []
 
-        # ── RAY_ADDRESS — interactive cluster join walkthrough (training only) ──
+        # ── RAY_ADDRESS — only prompt if not already in .env ───────────────
         if (
-            overlay == "training"
-            and not re.search(r"^RAY_ADDRESS=", content, re.MULTILINE)
+            not re.search(r"^RAY_ADDRESS=", content, re.MULTILINE)
             and not os.environ.get("RAY_ADDRESS", "").strip()
         ):
-
-            ray_address = ""
-
-            if sys.stdin.isatty():
-                typer.echo("\n" + "=" * 60)
-                typer.echo("  Sovereign Forge — Node Configuration")
-                typer.echo("=" * 60)
-                typer.echo(
-                    "\n  Is this node joining an existing Ray cluster?\n"
-                    "  Answer 'yes' for worker nodes 2..N.\n"
-                    "  Answer 'no' if this is the head node (starts the cluster).\n"
-                )
-                joining = typer.confirm("  Join an existing cluster?", default=False)
-
-                if joining:
-                    ray_address = typer.prompt(
-                        "  Ray cluster address",
-                        default="ray://192.168.1.10:10001",
-                    )
-                    typer.echo(
-                        f"\n  ✓ Worker node configured.\n"
-                        f"  Will join cluster at: {ray_address}\n"
-                        "  This node will NOT start a Ray dashboard.\n"
-                        "  DeploymentSupervisor will reuse the head actor.\n"
-                    )
-                else:
-                    dashboard_port = os.environ.get("RAY_DASHBOARD_PORT", "8265")
-                    typer.echo(
-                        f"\n  ✓ Head node configured.\n"
-                        f"  This node will start the Ray cluster and expose\n"
-                        f"  the dashboard on port {dashboard_port}.\n"
-                        "  Worker nodes should set:\n"
-                        "    RAY_ADDRESS=ray://<this_host_ip>:10001\n"
-                    )
-            else:
-                self.log.info(
-                    "Non-interactive environment — RAY_ADDRESS defaulting to '' (head node)."
-                )
-
-            if not injected:
-                content += "\n# Added by pdavid --training overlay\n"
+            ray_address = self._prompt_ray_node_role()
+            content += "\n# Added by pdavid --training overlay\n"
             content += f"RAY_ADDRESS={ray_address}\n"
             os.environ["RAY_ADDRESS"] = ray_address
             injected.append(
-                f"RAY_ADDRESS={'(head node — empty)' if not ray_address else ray_address}"
+                f"RAY_ADDRESS={'(head node)' if not ray_address else ray_address}"
             )
 
-        # ── Remaining required vars ─────────────────────────────────────────────
-        for key, default in required.items():
+        # ── Remaining Forge defaults ────────────────────────────────────────
+        forge_defaults = {
+            "TRAINING_PROFILE": "laptop",
+            "RAY_DASHBOARD_PORT": "8265",
+            "RAY_CLIENT_SERVER_PORT": "10001",
+        }
+        for key, default in forge_defaults.items():
             if re.search(rf"^{re.escape(key)}=", content, re.MULTILINE):
                 continue
             if os.environ.get(key, "").strip():
                 continue
-            if not injected:
-                content += "\n# Added by pdavid --training overlay\n"
             content += f"{key}={default}\n"
             os.environ[key] = default
-            injected.append(key)
-            self.log.info(
-                "_merge_env_for_overlay: injected '%s=%s' into .env", key, default
-            )
+            injected.append(f"{key}={default}")
+            self.log.info("Injected '%s=%s' into .env", key, default)
 
         if injected:
             env_path.write_text(content, encoding="utf-8")
             typer.echo(
-                f"\n  ✚ Added {len(injected)} variable(s) to .env for --{overlay} overlay:\n"
+                f"\n  ✚ Added {len(injected)} variable(s) to .env for Sovereign Forge:\n"
                 + "\n".join(f"    {k}" for k in injected)
                 + "\n  Edit them any time: pdavid configure --set KEY=VALUE\n"
             )
             typer.echo("=" * 60 + "\n")
-        else:
-            self.log.debug(
-                "_merge_env_for_overlay: all required vars for '%s' already present.",
-                overlay,
+
+    def _prompt_ray_node_role(self) -> str:
+        """
+        Interactive dialog: is this a Ray HEAD node or a WORKER node?
+
+        Returns the RAY_ADDRESS value to write to .env.
+          HEAD node   → returns ""
+          WORKER node → returns "ray://<ip>:<port>"
+        """
+        if not sys.stdin.isatty():
+            self.log.info(
+                "Non-interactive environment — defaulting to Ray HEAD node (RAY_ADDRESS='')."
             )
+            return ""
+
+        typer.echo("\n" + "=" * 60)
+        typer.echo("  Sovereign Forge — Node Role Configuration")
+        typer.echo("=" * 60)
+        typer.echo(
+            "\n"
+            "  This node will run the Sovereign Forge training stack.\n"
+            "  Choose the role for this machine:\n\n"
+            "  HEAD NODE   — Starts the Ray cluster. Runs the Ray dashboard.\n"
+            "                All other GPU machines join this node.\n"
+            "                Choose this for your primary / first machine.\n\n"
+            "  WORKER NODE — Joins an existing Ray cluster started on another\n"
+            "                machine. Adds GPU capacity to the cluster.\n"
+            "                Choose this for machines 2, 3, N.\n"
+            "                (Simpler: use `pdavid worker --join <ip>` instead)\n"
+        )
+
+        is_worker = typer.confirm(
+            "  Is this a WORKER node joining an existing cluster?", default=False
+        )
+
+        if not is_worker:
+            dashboard_port = os.environ.get("RAY_DASHBOARD_PORT", "8265")
+            typer.echo(
+                f"\n  ✓ HEAD NODE configured.\n"
+                f"    Ray cluster will start on this machine.\n"
+                f"    Dashboard: http://localhost:{dashboard_port}\n"
+                f"    Worker nodes can join with:\n"
+                f"      pdavid worker --join <this-machine-ip>\n"
+            )
+            return ""
+
+        head_ip = typer.prompt(
+            "  Head node IP address",
+            default="192.168.1.10",
+        )
+        ray_port = typer.prompt(
+            "  Ray client port",
+            default="10001",
+        )
+        ray_address = f"ray://{head_ip}:{ray_port}"
+        typer.echo(
+            f"\n  ✓ WORKER NODE configured.\n"
+            f"    Will join cluster at: {ray_address}\n"
+            f"    This node will NOT start a Ray dashboard.\n"
+        )
+        return ray_address
+
+    # ------------------------------------------------------------------
+    # Port conflict checks
+    # ------------------------------------------------------------------
 
     def _check_port_conflicts(self, ports: dict) -> bool:
-        """
-        Checks whether required host ports are already bound before starting
-        an overlay. Gives the user a clear actionable error instead of a
-        cryptic Docker compose failure.
-
-        Args:
-            ports: dict of {port_number: service_description}
-                    e.g. {9001: "training-api", 8265: "Ray dashboard"}
-
-        Returns:
-            True  — all ports are free, safe to proceed
-            False — one or more ports are already in use, startup blocked
-        """
-        import socket as _socket
-
         blocked = []
         warned = []
 
-        for port, description in ports.items():
-            severity = (
-                ports[port]
-                if isinstance(ports[port], tuple)
-                else (ports[port], "error")
-            )
-            if isinstance(severity, tuple):
-                label, level = severity
-            else:
-                label, level = severity, "error"
-
+        for port, (label, level) in ports.items():
             try:
                 with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
                     sock.settimeout(1)
-                    result = sock.connect_ex(("127.0.0.1", port))
-                    in_use = result == 0
+                    in_use = sock.connect_ex(("127.0.0.1", port)) == 0
             except Exception:
                 in_use = False
 
@@ -1152,14 +1129,12 @@ class Orchestrator:
                 else:
                     blocked.append((port, label))
 
-        if warned:
-            for port, label in warned:
-                self.log.warning(
-                    "Port %s (%s) appears to be in use. "
-                    "The worker will attempt to evict the existing container automatically.",
-                    port,
-                    label,
-                )
+        for port, label in warned:
+            self.log.warning(
+                "Port %s (%s) is in use. The worker will attempt to handle this automatically.",
+                port,
+                label,
+            )
 
         if blocked:
             typer.echo("\n" + "=" * 60, err=True)
@@ -1168,9 +1143,8 @@ class Orchestrator:
             for port, label in blocked:
                 typer.echo(f"  ✗  Port {port} ({label}) is already in use.", err=True)
             typer.echo(
-                "\n  Free the ports above and re-run, or stop the conflicting service:\n"
+                "\n  Free the ports above and re-run:\n"
                 "    pdavid --mode down\n"
-                "  Then:\n"
                 "    pdavid --mode up --training\n",
                 err=True,
             )
@@ -1197,7 +1171,7 @@ class Orchestrator:
         for key in self._USER_REQUIRED:
             if not os.environ.get(key, "").strip():
                 self.log.warning(
-                    "'%s' not set — vLLM/HuggingFace features unavailable. "
+                    "'%s' not set — HuggingFace / gated model features unavailable. "
                     "Set with: pdavid configure --set %s=<value>",
                     key,
                     key,
@@ -1227,18 +1201,10 @@ class Orchestrator:
             return False
 
     # ------------------------------------------------------------------
-    # Admin key management — called only from bootstrap_admin()
+    # Admin key management
     # ------------------------------------------------------------------
 
     def _provision_admin_api_key(self) -> str:
-        """
-        Generate a fresh ADMIN_API_KEY, persist it to .env, reload the
-        environment, and return the plaintext key so the caller can
-        display it once to the operator.
-
-        If ADMIN_API_KEY is already present and non-empty in .env the
-        existing value is returned unchanged (idempotent re-runs).
-        """
         env_path = Path(self._ENV_FILE)
         content = env_path.read_text(encoding="utf-8")
 
@@ -1249,7 +1215,6 @@ class Orchestrator:
 
         new_key = f"ad_{secrets.token_urlsafe(32)}"
 
-        # Replace in-place if the placeholder line exists, otherwise append.
         if re.search(r"^ADMIN_API_KEY=", content, re.MULTILINE):
             content = re.sub(
                 r"^ADMIN_API_KEY=.*",
@@ -1311,15 +1276,6 @@ class Orchestrator:
         try:
             self._run_command(up_cmd, check=True)
             self.log.info("Stack started successfully.")
-            if not getattr(self.args, "attached", False):
-                logs_hint = (
-                    ["docker", "compose"]
-                    + self._compose_files()
-                    + ["logs", "-f", "--tail=50"]
-                )
-                if target:
-                    logs_hint.extend(target)
-                self.log.info("View logs: %s", " ".join(logs_hint))
         except subprocess.CalledProcessError:
             raise SystemExit(1)
 
@@ -1375,9 +1331,21 @@ class Orchestrator:
         if confirm.strip() != "confirm nuke":
             raise SystemExit(0)
         self._run_command(
-            ["docker", "compose"]
-            + self._compose_files()
-            + ["down", "--volumes", "--remove-orphans"],
+            [
+                "docker",
+                "compose",
+                "--project-directory",
+                str(Path.cwd()),
+                "--env-file",
+                self._env_file_abs,
+                "-f",
+                self.base_compose,
+                "--profile",
+                "training",
+                "down",
+                "--volumes",
+                "--remove-orphans",
+            ],
             check=False,
         )
         self._run_command(
@@ -1434,24 +1402,33 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # Main dispatch
     # ------------------------------------------------------------------
-    def run(self):
-        gpu = getattr(self.args, "gpu", False)
-        ollama = getattr(self.args, "ollama", False)
-        vllm = getattr(self.args, "vllm", False)
-        training = getattr(self.args, "training", False)
-        mode = getattr(self.args, "mode", "up")
 
-        suffix = ""
-        if gpu:
-            suffix = " + GPU (Ollama + vLLM)"
-        elif ollama and vllm:
-            suffix = " + Ollama + vLLM"
-        elif ollama:
-            suffix = " + Ollama"
-        elif vllm:
-            suffix = " + vLLM"
+    def run(self):
+        mode = getattr(self.args, "mode", "up")
+        training = getattr(self.args, "training", False)
+        ollama = getattr(self.args, "ollama", False)
+
+        # Deprecation warnings for legacy flags
+        if getattr(self.args, "vllm", False):
+            typer.echo(
+                "\n  [deprecated] --vllm is no longer needed. vLLM inference is now\n"
+                "  managed inside the inference-worker container via Ray Serve.\n"
+                "  Use --training to start the full inference mesh.\n",
+                err=True,
+            )
+        if getattr(self.args, "gpu", False):
+            typer.echo(
+                "\n  [deprecated] --gpu is no longer needed. Use --training to start\n"
+                "  the Ray Serve inference mesh, and --ollama for Ollama inference.\n",
+                err=True,
+            )
+
+        suffix_parts = []
+        if ollama:
+            suffix_parts.append("Ollama")
         if training:
-            suffix += " + Sovereign Forge"
+            suffix_parts.append("Sovereign Forge")
+        suffix = (" + " + " + ".join(suffix_parts)) if suffix_parts else ""
 
         self.log.info("Mode: %s%s", mode, suffix)
 
@@ -1484,6 +1461,213 @@ class Orchestrator:
 
 
 # ---------------------------------------------------------------------------
+# Worker node helper — isolated scale-out path
+# ---------------------------------------------------------------------------
+class WorkerNodeOrchestrator:
+    """
+    Manages a single `inference-worker` container that joins an existing
+    Ray cluster on a remote head node.
+
+    This is the clean path for adding GPU capacity to a running Sovereign
+    Forge deployment without touching the head node's stack at all.
+
+    Usage:
+        pdavid worker --join 192.168.1.10
+        pdavid worker --join 192.168.1.10 --ray-port 10001 --serve-port 8000
+    """
+
+    _ENV_FILE = ".env"
+
+    def __init__(
+        self,
+        head_ip: str,
+        ray_port: int,
+        serve_port: int,
+        hf_cache_path: Optional[str],
+        shared_path: Optional[str],
+        pull: bool,
+        verbose: bool,
+    ) -> None:
+        self.head_ip = head_ip
+        self.ray_port = ray_port
+        self.serve_port = serve_port
+        self.hf_cache_path = hf_cache_path or os.path.join(
+            os.path.expanduser("~"), ".cache", "huggingface"
+        )
+        self.shared_path = shared_path or os.path.abspath("./shared_data")
+        self.pull = pull
+        self.is_windows = _platform.system() == "Windows"
+        self.log = log
+
+        if verbose:
+            self.log.setLevel(logging.DEBUG)
+
+    @property
+    def ray_address(self) -> str:
+        return f"ray://{self.head_ip}:{self.ray_port}"
+
+    @property
+    def node_id(self) -> str:
+        return f"node_{_socket.gethostname()}"
+
+    def _run_command(self, cmd_list, check=True, suppress_logs=False):
+        if not suppress_logs:
+            self.log.info("Running: %s", " ".join(str(c) for c in cmd_list))
+        try:
+            return subprocess.run(
+                cmd_list,
+                check=check,
+                shell=self.is_windows,  # nosec B602
+            )
+        except subprocess.CalledProcessError as e:
+            self.log.error("Command failed (code %s).", e.returncode)
+            if check:
+                raise
+            return e
+
+    def _check_nvidia(self) -> bool:
+        cmd = shutil.which("nvidia-smi")
+        if not cmd:
+            return False
+        try:
+            subprocess.run([cmd], check=True, capture_output=True)  # nosec B603
+            return True
+        except Exception:
+            return False
+
+    def _verify_head_reachable(self) -> bool:
+        """TCP probe the Ray client port on the head node before starting."""
+        try:
+            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+                s.settimeout(5)
+                result = s.connect_ex((self.head_ip, self.ray_port))
+                return result == 0
+        except Exception:
+            return False
+
+    def join(self) -> None:
+        """
+        Starts a single `inference-worker` container configured as a Ray
+        WORKER node — joins the cluster at self.ray_address.
+
+        No compose file needed. This is a direct `docker run` call so that
+        machine 2 requires nothing beyond Docker + nvidia-container-toolkit.
+        The image is pulled from Docker Hub; no local checkout required.
+        """
+        typer.echo("\n" + "=" * 60)
+        typer.echo("  Sovereign Forge — Worker Node Join")
+        typer.echo("=" * 60)
+        typer.echo(f"  Head node     : {self.head_ip}")
+        typer.echo(f"  Ray address   : {self.ray_address}")
+        typer.echo(f"  Node ID       : {self.node_id}")
+        typer.echo(f"  HF cache      : {self.hf_cache_path}")
+        typer.echo(f"  Shared path   : {self.shared_path}")
+        typer.echo("=" * 60 + "\n")
+
+        if not shutil.which("docker"):
+            typer.echo("[error] Docker not found in PATH.", err=True)
+            raise SystemExit(1)
+
+        if not self._check_nvidia():
+            typer.echo(
+                "[error] NVIDIA drivers / nvidia-smi not found.\n"
+                f"Install the NVIDIA Container Toolkit: {_NVIDIA_TOOLKIT_INSTALL_URL}",
+                err=True,
+            )
+            raise SystemExit(1)
+
+        typer.echo("  Verifying connectivity to head node...")
+        if not self._verify_head_reachable():
+            typer.echo(
+                f"\n  [error] Cannot reach head node at {self.head_ip}:{self.ray_port}.\n"
+                "  Ensure the head node is running and the port is reachable from this machine.\n"
+                "  If the head is behind a firewall, open TCP ports 10001 and 8265.\n",
+                err=True,
+            )
+            raise SystemExit(1)
+        typer.echo("  ✓ Head node is reachable.\n")
+
+        image = "thanosprime/projectdavid-core-inference-worker:latest"
+
+        if self.pull:
+            typer.echo(f"  Pulling latest image: {image}")
+            self._run_command(["docker", "pull", image])
+            typer.echo("")
+
+        # Ensure shared_data directory exists on this machine
+        Path(self.shared_path).mkdir(parents=True, exist_ok=True)
+        Path(self.hf_cache_path).mkdir(parents=True, exist_ok=True)
+
+        cmd = [
+            "docker",
+            "run",
+            "--rm",  # clean up on exit
+            "--detach",
+            "--name",
+            f"inference_worker_{self.node_id}",
+            "--gpus",
+            "all",
+            "--shm-size",
+            "5g",
+            "--runtime",
+            "nvidia",
+            # ── Ray cluster join ──────────────────────────────────────────
+            "--env",
+            f"RAY_ADDRESS={self.ray_address}",
+            "--env",
+            f"NODE_ID={self.node_id}",
+            # ── Inference serve port ──────────────────────────────────────
+            "--env",
+            f"SERVE_HTTP_PORT={self.serve_port}",
+            "--publish",
+            f"{self.serve_port}:{self.serve_port}",
+            # ── GPU ───────────────────────────────────────────────────────
+            "--env",
+            "NVIDIA_VISIBLE_DEVICES=all",
+            "--env",
+            "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+            # ── HuggingFace ───────────────────────────────────────────────
+            "--env",
+            "HF_HOME=/root/.cache/huggingface",
+            "--volume",
+            f"{self.hf_cache_path}:/root/.cache/huggingface",
+            # ── Shared model storage ──────────────────────────────────────
+            "--env",
+            "SHARED_PATH=/mnt/training_data",
+            "--volume",
+            f"{self.shared_path}:/mnt/training_data",
+            # ── Misc ──────────────────────────────────────────────────────
+            "--env",
+            "PYTHONUNBUFFERED=1",
+            "--env",
+            "RAY_IGNORE_VERSION_MISMATCH=1",
+            "--restart",
+            "unless-stopped",
+            image,
+        ]
+
+        try:
+            result = self._run_command(cmd, check=True)
+            typer.echo("\n" + "=" * 60)
+            typer.echo("  ✓ Worker node started successfully.")
+            typer.echo(f"  Container  : inference_worker_{self.node_id}")
+            typer.echo(f"  Ray cluster: {self.ray_address}")
+            typer.echo(f"  Serve port : {self.serve_port}")
+            typer.echo("\n  To follow logs:")
+            typer.echo(f"    docker logs -f inference_worker_{self.node_id}")
+            typer.echo("\n  To stop:")
+            typer.echo(f"    docker stop inference_worker_{self.node_id}")
+            typer.echo("=" * 60 + "\n")
+        except subprocess.CalledProcessError:
+            typer.echo(
+                "\n  [error] Failed to start the worker container.\n"
+                "  Check that the image exists and the head node is still reachable.\n",
+                err=True,
+            )
+            raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
 # CLI entry-points
 # ---------------------------------------------------------------------------
 
@@ -1497,28 +1681,37 @@ def main(
         help="Stack action: up | build | both | down_only | logs",
         show_default=True,
     ),
-    # --- GPU service flags — independent opt-in ---
+    # ── Sovereign Forge ───────────────────────────────────────────────────
     training: bool = typer.Option(
         False,
         "--training",
-        help="Start Sovereign Forge training stack. Requires NVIDIA GPU and nvidia-container-toolkit.",
+        help=(
+            "Start the Sovereign Forge training stack (training-api + training-worker + inference-worker). "
+            "inference-worker is the Ray HEAD node — it owns the GPU, runs Ray Serve, "
+            "and serves vLLM inference. training-worker manages fine-tuning job lifecycle. "
+            "Requires NVIDIA GPU + nvidia-container-toolkit."
+        ),
+    ),
+    # ── Ollama ────────────────────────────────────────────────────────────
+    ollama: bool = typer.Option(
+        False,
+        "--ollama",
+        help="Start Ollama local inference. Requires NVIDIA GPU + nvidia-container-toolkit.",
+    ),
+    # ── Legacy GPU flags (deprecated, no-op with warning) ─────────────────
+    vllm: bool = typer.Option(
+        False,
+        "--vllm",
+        help="[DEPRECATED] vLLM is now managed inside inference-worker via Ray Serve. Use --training.",
+        hidden=True,
     ),
     gpu: bool = typer.Option(
         False,
         "--gpu",
-        help="Start both Ollama and vLLM (convenience shorthand for --ollama --vllm).",
+        help="[DEPRECATED] Use --training and/or --ollama instead.",
+        hidden=True,
     ),
-    ollama: bool = typer.Option(
-        False,
-        "--ollama",
-        help="Start Ollama only. Requires NVIDIA GPU and nvidia-container-toolkit.",
-    ),
-    vllm: bool = typer.Option(
-        False,
-        "--vllm",
-        help="Start vLLM only. Requires NVIDIA GPU and nvidia-container-toolkit.",
-    ),
-    # --- Targeting ---
+    # ── Targeting ─────────────────────────────────────────────────────────
     services: Optional[List[str]] = typer.Option(
         None,
         "--services",
@@ -1530,7 +1723,7 @@ def main(
         "-x",
         help="Exclude service(s) from 'up'. Repeat for multiple: --exclude samba",
     ),
-    # --- Up ---
+    # ── Up options ────────────────────────────────────────────────────────
     down: bool = typer.Option(False, "--down", help="Run 'down' before starting."),
     clear_volumes: bool = typer.Option(
         False, "--clear-volumes", "-v", help="Remove volumes on down."
@@ -1541,7 +1734,7 @@ def main(
     pull: bool = typer.Option(
         False,
         "--pull",
-        help="Pull the latest container images before starting. Use after upgrading the package.",
+        help="Pull the latest container images before starting.",
     ),
     attached: bool = typer.Option(
         False, "--attached", "-a", help="Run up in foreground."
@@ -1549,24 +1742,22 @@ def main(
     build_before_up: bool = typer.Option(
         False, "--build-before-up", help="Build before up."
     ),
-    # --- Build ---
+    # ── Build options ─────────────────────────────────────────────────────
     no_cache: bool = typer.Option(False, "--no-cache", help="Build without cache."),
     parallel: bool = typer.Option(
         False, "--parallel", help="Build images in parallel."
     ),
-    # --- Nuke ---
+    # ── Nuke ──────────────────────────────────────────────────────────────
     nuke: bool = typer.Option(
         False,
         "--nuke",
         help="DANGER: destroy all stack data. Requires confirmation.",
     ),
-    # --- Logs ---
+    # ── Logs ──────────────────────────────────────────────────────────────
     follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output."),
-    tail: Optional[int] = typer.Option(
-        None, "--tail", help="Number of log lines to show."
-    ),
+    tail: Optional[int] = typer.Option(None, "--tail", help="Number of log lines."),
     timestamps: bool = typer.Option(
-        False, "--timestamps", "-t", help="Show timestamps in log output."
+        False, "--timestamps", "-t", help="Show timestamps."
     ),
     no_log_prefix: bool = typer.Option(
         False, "--no-log-prefix", help="Omit service name prefix in logs."
@@ -1581,28 +1772,25 @@ def main(
       pdavid --mode up --pull\n
       pdavid --mode up --exclude samba\n
       pdavid --mode up --services api db qdrant\n
-      pdavid --mode up --down --clear-volumes\n
       pdavid --mode logs --follow --timestamps\n
-      pdavid --mode logs --services api --tail 100\n
+      pdavid --mode down_only\n
 
-    GPU INFERENCE (opt-in):\n
+    OLLAMA INFERENCE (opt-in, requires NVIDIA GPU):\n
       pdavid --mode up --ollama\n
-      pdavid --mode up --vllm\n
-      pdavid --mode up --gpu\n
 
-    SOVEREIGN FORGE — training + inference mesh (opt-in):\n
+    SOVEREIGN FORGE — training + Ray inference mesh (opt-in):\n
       pdavid --mode up --training\n
-      pdavid --mode up --training --vllm\n
-      pdavid --mode up --gpu --training\n
+      pdavid --mode up --training --ollama\n
+
+    SCALE-OUT — add a second GPU machine to the Ray cluster:\n
+      pdavid worker --join <head-node-ip>\n
 
     CONFIGURATION:\n
       pdavid configure --set HF_TOKEN=hf_abc123\n
       pdavid configure --set TRAINING_PROFILE=standard\n
-      pdavid configure --set RAY_ADDRESS=ray://192.168.1.10:10001\n
       pdavid configure --interactive\n
       pdavid bootstrap-admin\n
     """
-
     if ctx.invoked_subcommand is not None:
         return
 
@@ -1635,9 +1823,9 @@ def main(
     args = SimpleNamespace(
         training=training,
         mode=mode,
-        gpu=gpu,
         ollama=ollama,
         vllm=vllm,
+        gpu=gpu,
         services=services or [],
         exclude=exclude or [],
         down=down,
@@ -1669,6 +1857,67 @@ def main(
         raise SystemExit(1)
 
 
+@app.command(name="worker")
+def worker_node(
+    join: str = typer.Option(
+        ...,
+        "--join",
+        "-j",
+        help="IP address of the Ray HEAD node to join. Example: 192.168.1.10",
+    ),
+    ray_port: int = typer.Option(
+        10001,
+        "--ray-port",
+        help="Ray client server port on the head node.",
+    ),
+    serve_port: int = typer.Option(
+        8000,
+        "--serve-port",
+        help="Local port to expose Ray Serve HTTP on this worker.",
+    ),
+    hf_cache_path: Optional[str] = typer.Option(
+        None,
+        "--hf-cache",
+        help="Path to HuggingFace model cache. Defaults to ~/.cache/huggingface.",
+    ),
+    shared_path: Optional[str] = typer.Option(
+        None,
+        "--shared-path",
+        help="Path to shared model/data storage. Defaults to ./shared_data.",
+    ),
+    pull: bool = typer.Option(
+        False,
+        "--pull",
+        help="Pull the latest inference-worker image before starting.",
+    ),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
+) -> None:
+    """
+    Join an existing Sovereign Forge Ray cluster as an inference worker node.
+
+    Run this command on machine 2, 3, N to add GPU capacity to a running cluster.
+    The head node must already be running (`pdavid --mode up --training` on machine 1).
+
+    Examples:\n
+      pdavid worker --join 192.168.1.10\n
+      pdavid worker --join 192.168.1.10 --ray-port 10001 --serve-port 8000\n
+      pdavid worker --join 192.168.1.10 --hf-cache /data/hf_cache --pull\n
+
+    This command requires only Docker + the NVIDIA Container Toolkit.\n
+    No compose files, no full stack installation needed on worker machines.\n
+    """
+    orchestrator = WorkerNodeOrchestrator(
+        head_ip=join,
+        ray_port=ray_port,
+        serve_port=serve_port,
+        hf_cache_path=hf_cache_path,
+        shared_path=shared_path,
+        pull=pull,
+        verbose=verbose,
+    )
+    orchestrator.join()
+
+
 @app.command()
 def configure(
     set_var: Optional[List[str]] = typer.Option(
@@ -1686,7 +1935,7 @@ def configure(
 
     Examples:\n
       pdavid configure --set HF_TOKEN=hf_abc123\n
-      pdavid configure --set VLLM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct\n
+      pdavid configure --set TRAINING_PROFILE=standard\n
       pdavid configure --interactive\n
     """
     env_path = Path(Orchestrator._ENV_FILE)
@@ -1762,13 +2011,13 @@ def configure(
         typer.echo(
             f"\nWARNING: {', '.join(dangerous)} cannot be safely rotated on a live stack.\n"
             "  Back up your data, then:\n"
-            "    pdavid --down --clear-volumes\n"
+            "    pdavid --mode down --clear-volumes\n"
             "    pdavid --mode up"
         )
     elif requires_down:
         typer.echo(
             f"\n  Note: {', '.join(requires_down)} require a full restart:\n"
-            "    pdavid --down\n"
+            "    pdavid --mode down\n"
             "    pdavid --mode up"
         )
     else:
@@ -1780,7 +2029,7 @@ def bootstrap_admin(
     db_url: Optional[str] = typer.Option(
         None,
         "--db-url",
-        help="Override DATABASE_URL for the bootstrap script. Defaults to DATABASE_URL from .env.",
+        help="Override DATABASE_URL. Defaults to DATABASE_URL from .env.",
     ),
     verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
 ) -> None:
@@ -1793,16 +2042,16 @@ def bootstrap_admin(
     Safe to re-run: existing users and keys are detected and left untouched.
     """
     args = SimpleNamespace(
-        verbose=verbose, gpu=False, ollama=False, vllm=False, training=False
+        verbose=verbose,
+        training=False,
+        ollama=False,
+        vllm=False,
+        gpu=False,
     )
     o = Orchestrator(args)
-
-    # Generate (or retrieve) the admin key — only happens here, never at init.
     admin_key = o._provision_admin_api_key()
-
     o.exec_bootstrap_admin(db_url=db_url)
 
-    # Print admin credentials once, clearly, after the bootstrap completes.
     typer.echo("\n" + "=" * 60)
     typer.echo("  Bootstrap complete.")
     typer.echo(f"  ADMIN_API_KEY : {admin_key}")
