@@ -1,6 +1,32 @@
+# docker-compose.yml (projectdavid-platform)
+#
+# Base stack + Sovereign Forge opt-in via Docker Compose profiles.
+#
+# USAGE:
+#   pdavid --mode up                    # Base stack only
+#   pdavid --mode up --ollama           # + Ollama (overlay)
+#   pdavid --mode up --training         # + Sovereign Forge (profile: training)
+#
+# SOVEREIGN FORGE ARCHITECTURE
+# ─────────────────────────────
+#   inference-worker  Ray HEAD + Ray Serve. Owns the GPU on this machine.
+#                     VLLM_BASE_URL on the api points here (:8002→:8000).
+#   training-worker   Fine-tuning job runner (Redis queue, no Ray ownership).
+#   training-api      Dataset/job/registry REST API (:9001).
+#
+# SCALE-OUT: pdavid worker --join <head-ip>   (on machines 2, 3, N)
+#
+# IMAGE PINNING
+# ─────────────
+# All third-party images are pinned by SHA256 digest for immutability.
+# Tags are human-readable hints only — Docker enforces the digest.
+# See PINNED_IMAGES.md for the full registry, upgrade policy, and backlog.
+# Pinned: 2026-04-04 | Stack: base + training | GPU: RTX 4060 CUDA 12.8
+
 services:
+
   db:
-    image: mysql:8.0
+    image: mysql:8.0@sha256:64756cc92f707eb504496d774353990bcb0f6999ddf598b6ad188f2da66bd000
     container_name: my_mysql_cosmic_catalyst
     restart: always
     environment:
@@ -10,8 +36,6 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-default}
     volumes:
       - mysql_data:/var/lib/mysql
-    # Port 3307 kept for local tooling (DBeaver etc) via SPECIAL_DB_URL.
-    # Remove in production if host-level DB access is not needed.
     ports:
       - "3307:3306"
     healthcheck:
@@ -23,7 +47,8 @@ services:
       - my_custom_network
 
   qdrant:
-    image: qdrant/qdrant:latest
+    # v1.17.0 — upgrade tag to qdrant/qdrant:v1.17.0 on next bump
+    image: qdrant/qdrant@sha256:94728574965d17c6485dd361aa3c0818b325b9016dac5ea6afec7b4b2700865f
     container_name: qdrant_server
     restart: always
     volumes:
@@ -36,7 +61,8 @@ services:
       - my_custom_network
 
   redis:
-    image: redis:7
+    # 7.4 — upgrade tag to redis:7.4 on next bump
+    image: redis:7@sha256:a5995dfdf108997f8a7c9587f54fad5e94ed5848de5236a6b28119e99efd67e0
     container_name: redis
     restart: unless-stopped
     volumes:
@@ -45,7 +71,8 @@ services:
       - my_custom_network
 
   browser:
-    image: ghcr.io/browserless/chromium:latest
+    # No semver tags published upstream — digest-only pin
+    image: ghcr.io/browserless/chromium@sha256:57a1edb1f76e56cf1f128a2c379381df9d937e643c2cf562d76463b0280c24c4
     container_name: browserless_chromium
     restart: always
     environment:
@@ -55,7 +82,8 @@ services:
       - my_custom_network
 
   searxng:
-    image: searxng/searxng:latest
+    # 2026.4.3-c980fa1ef — upgrade tag to searxng/searxng:2026.4.3-c980fa1ef on next bump
+    image: searxng/searxng@sha256:a89ed4a9dc2cbafeee79fc5fd75067e201543ed453fb43eae576d3e09c61780b
     container_name: searxng
     restart: unless-stopped
     volumes:
@@ -69,7 +97,8 @@ services:
       - my_custom_network
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    # v0.149.0 — upgrade tag to otel/opentelemetry-collector-contrib:0.149.0 on next bump
+    image: otel/opentelemetry-collector-contrib@sha256:0fba96233274f6d665ac8831ad99dfe6479a9a20459f6e2719c0d20945773b46
     container_name: otel_collector
     restart: always
     command: ["--config=/etc/otel-config.yaml"]
@@ -81,7 +110,8 @@ services:
       - my_custom_network
 
   jaeger:
-    image: jaegertracing/all-in-one:latest
+    # 1.76.0 — upgrade tag to jaegertracing/all-in-one:1.76.0 on next bump
+    image: jaegertracing/all-in-one@sha256:ab6f1a1f0fb49ea08bcd19f6b84f6081d0d44b364b6de148e1798eb5816bacac
     container_name: jaeger_ui
     restart: always
     environment:
@@ -90,10 +120,6 @@ services:
       - my_custom_network
 
   api:
-    # Pre-built image from Docker Hub.
-    # Always uses :latest — run `pdavid --mode up --pull` to get the newest version.
-    # Scripts are baked into the image at /app/src — do NOT mount a local
-    # scripts directory over them.
     image: thanosprime/projectdavid-core-api:latest
     container_name: fastapi_cosmic_catalyst
     restart: always
@@ -113,11 +139,11 @@ services:
       - OTEL_TRACES_EXPORTER=otlp
       - OTEL_METRICS_EXPORTER=none
       - OTEL_LOGS_EXPORTER=none
-      # Ollama and vLLM are GPU-only — localhost stubs used here.
-      # Overridden with real internal URLs by the GPU overlays when
-      # pdavid --mode up --ollama / --vllm / --gpu is used.
+      # Ollama stub — overridden by docker-compose.ollama.yml when --ollama is used.
       - OLLAMA_BASE_URL=http://localhost:11434/v1
-      - VLLM_BASE_URL=http://localhost:8001
+      # Ray Serve inference endpoint (inference-worker container).
+      # Active when --training is used; stub otherwise.
+      - VLLM_BASE_URL=http://inference_worker:8000
       - SHARED_PATH=/app/shared_data
       - ASSISTANTS_BASE_URL=http://localhost:80
       - DOWNLOAD_BASE_URL=http://localhost:80/v1/files/download
@@ -142,8 +168,6 @@ services:
       - my_custom_network
 
   sandbox:
-    # Pre-built image from Docker Hub.
-    # Always uses :latest — run `pdavid --mode up --pull` to get the newest version.
     image: thanosprime/projectdavid-core-sandbox:latest
     container_name: sandbox_api
     restart: always
@@ -164,7 +188,8 @@ services:
       - my_custom_network
 
   samba:
-    image: dperson/samba
+    # WARNING: dperson/samba upstream is inactive. Evaluate replacement.
+    image: dperson/samba@sha256:66088b78a19810dd1457a8f39340e95e663c728083efa5fe7dc0d40b2478e869
     container_name: samba_server
     restart: unless-stopped
     environment:
@@ -182,19 +207,138 @@ services:
       - my_custom_network
 
   nginx:
-    image: nginx:alpine
+    # stable-alpine3.23
+    image: nginx:alpine@sha256:e7257f1ef28ba17cf7c248cb8ccf6f0c6e0228ab9c315c152f9c203cd34cf6d1
     container_name: nginx_proxy
     restart: always
     ports:
       - "80:80"
-      # Uncomment when TLS certs are available:
-      # - "443:443"
     volumes:
       - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      # Uncomment when TLS certs are available:
-      # - ./docker/nginx/certs:/etc/nginx/certs:ro
     depends_on:
       - api
+    networks:
+      - my_custom_network
+
+  # ---------------------------------------------------------------------------
+  # Sovereign Forge — profile: training
+  # Activated by: pdavid --mode up --training
+  # ---------------------------------------------------------------------------
+
+  inference-worker:
+    # Ray HEAD node + Ray Serve inference mesh.
+    # Owns the GPU. VLLM_BASE_URL on the api points to this container.
+    # Worker machines join this node via: pdavid worker --join <this-machine-ip>
+    image: thanosprime/projectdavid-core-inference-worker:latest
+    container_name: inference_worker
+    restart: unless-stopped
+    profiles: ["training"]
+    runtime: nvidia
+    shm_size: '5gb'
+    environment:
+      - NODE_ID=${NODE_ID:-}
+      # RAY_ADDRESS: blank = this node is the Ray HEAD.
+      # Set to ray://<head_ip>:<port> when joining an existing cluster.
+      - RAY_ADDRESS=${RAY_ADDRESS:-}
+      - RAY_DASHBOARD_PORT=${RAY_DASHBOARD_PORT:-8265}
+      - RAY_CLIENT_SERVER_PORT=${RAY_CLIENT_SERVER_PORT:-10001}
+      - SERVE_HTTP_PORT=8000
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379/0
+      - SHARED_PATH=/mnt/training_data
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=/root/.cache/huggingface
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - PYTHONUNBUFFERED=1
+      - RAY_IGNORE_VERSION_MISMATCH=1
+    ports:
+      - "8002:8000"    # Ray Serve HTTP (VLLM_BASE_URL resolves here)
+      - "8265:8265"    # Ray dashboard — http://localhost:8265
+      - "10001:10001"  # Ray client server (worker nodes join via this)
+    volumes:
+      - ${SHARED_PATH:-./shared_data}:/mnt/training_data
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+    depends_on:
+      - redis
+    networks:
+      - my_custom_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  training-worker:
+    # Fine-tuning job runner. Redis queue consumer.
+    # No Ray ownership. No GPU authority. Depends on inference-worker for
+    # Ray Serve deployment of fine-tuned models post-training.
+    image: thanosprime/projectdavid-core-training-worker:latest
+    container_name: training_worker
+    restart: unless-stopped
+    profiles: ["training"]
+    command: ["python", "/app/src/api/training/worker.py"]
+    env_file:
+      - .env
+    runtime: nvidia
+    shm_size: '5gb'
+    environment:
+      - NODE_ID=${NODE_ID:-}
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379/0
+      - ASSISTANTS_BASE_URL=http://api:80
+      - WORKER_API_KEY=${ADMIN_API_KEY}
+      - SHARED_PATH=/mnt/training_data
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=/root/.cache/huggingface
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${SHARED_PATH:-./shared_data}:/mnt/training_data
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+    depends_on:
+      - redis
+      - inference-worker
+    networks:
+      - my_custom_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  training-api:
+    # REST API for datasets, training jobs, and model registry.
+    # No GPU required. Queries Ray via dashboard HTTP API only.
+    image: thanosprime/projectdavid-core-training-api:latest
+    container_name: training_api
+    restart: unless-stopped
+    profiles: ["training"]
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - SECRET_KEY=${SECRET_KEY}
+      - DEFAULT_SECRET_KEY=${DEFAULT_SECRET_KEY}
+      - REDIS_URL=redis://redis:6379/0
+      - ASSISTANTS_BASE_URL=http://api:80
+      - WORKER_API_KEY=${ADMIN_API_KEY}
+      - SANDBOX_AUTH_SECRET=${SANDBOX_AUTH_SECRET}
+      - SHARED_PATH=/mnt/training_data
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "9001:9001"
+    volumes:
+      - ${SHARED_PATH:-./shared_data}:/mnt/training_data
+    depends_on:
+      - redis
+      - training-worker
     networks:
       - my_custom_network
 
