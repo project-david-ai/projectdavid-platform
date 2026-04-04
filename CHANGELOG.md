@@ -1,3 +1,10 @@
+## [1.30.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.30.1...v1.30.2) (2026-04-04)
+
+
+### Bug Fixes
+
+* **platform:** trigger release build ([d6478c5](https://github.com/project-david-ai/projectdavid-platform/commit/d6478c5c7802ae3f5a3a7f4887d46dc094018393))
+
 ## [1.30.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.30.0...v1.30.1) (2026-04-04)
 
 
