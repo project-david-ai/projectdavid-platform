@@ -1,3 +1,10 @@
+## [1.30.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.30.0...v1.30.1) (2026-04-04)
+
+
+### Bug Fixes
+
+* **deps:** trigger release for pinned image digests ([e98def3](https://github.com/project-david-ai/projectdavid-platform/commit/e98def35ee1696078c2fa26a5774350b7f4bdaee))
+
 # [1.30.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.29.0...v1.30.0) (2026-04-03)
 
 
