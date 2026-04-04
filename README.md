@@ -5,9 +5,11 @@
 [![PyPI](https://img.shields.io/pypi/v/projectdavid-platform?style=flat-square)](https://pypi.org/project/projectdavid-platform/)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](https://polyformproject.org/licenses/noncommercial/1.0.0/)
 
-The projectdavid-platform API provides a simple, self-hosted interface for state-of-the-art AI — assistants, agents, RAG pipelines, and code execution — with full parity to the OpenAI Assistants API across heterogeneous inference providers.
+projectdavid-platform is a self-hosted AI runtime that implements the OpenAI Assistants API specification, deployable on your own infrastructure, fully air-gapped if required.
+You get a production-ready API server out of the box: assistants, autonomous agents, RAG pipelines, sandboxed code execution, and multi-turn conversation, all through a single, standards-compliant REST API with full parity to OpenAI.
+Connect any model, anywhere. Run inference locally via Ollama or vLLM, route to remote providers like Together AI, or span both, all through one unified API surface. Switch providers without changing a line of application code.
+If your stack already speaks the OpenAI Assistants API, it already speaks Project David.
 
-Connect any model, anywhere. Run inference locally via Ollama or vLLM, or route to remote providers like Together AI — all through a single unified API. Switch providers without changing your application code.
 
 **Your models. Your data. Your infrastructure. Zero lock-in.**
 
