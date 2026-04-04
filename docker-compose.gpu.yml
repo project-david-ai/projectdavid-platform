@@ -18,10 +18,15 @@
 #   - NVIDIA Container Toolkit (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
 #   - HF_TOKEN set in .env (for gated model downloads)
 #   - HF_CACHE_PATH set in .env (auto-resolved by pdavid on first run)
+#
+# IMAGE PINNING
+# ─────────────
+# Pinned: 2026-04-04 | ollama: 0.20.0 | vllm: v0.9.0 | See PINNED_IMAGES.md
 
 services:
   ollama:
-    image: ollama/ollama:latest
+    # 0.20.0 — upgrade tag to ollama/ollama:0.20.0 on next bump
+    image: ollama/ollama@sha256:0455f166da85b1d07f694c33ba09278ca649603c0611ba8e46272b16eed7fccd
     container_name: ollama
     restart: unless-stopped
     runtime: nvidia
@@ -42,7 +47,8 @@ services:
               capabilities: [gpu]
 
   vllm:
-    image: vllm/vllm-openai:latest
+    # v0.9.0 — upgrade tag to vllm/vllm-openai:v0.9.0 on next bump
+    image: vllm/vllm-openai@sha256:d9a5c1c1614c959fde8d2a4d68449db184572528a6055afdd0caf1e66fb51504
     container_name: vllm_server
     restart: unless-stopped
     runtime: nvidia

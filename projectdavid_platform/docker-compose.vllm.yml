@@ -1,4 +1,4 @@
-# projectdavid_platform/docker-compose.vllm.yml
+# docker-compose.vllm.yml
 #
 # vLLM opt-in overlay — high-throughput GPU inference via vLLM.
 # Can be used independently of Ollama.
@@ -17,10 +17,15 @@
 #
 # To set HF_TOKEN after initial setup:
 #   pdavid configure --set HF_TOKEN=hf_abc123
+#
+# IMAGE PINNING
+# ─────────────
+# Pinned: 2026-04-04 | Stable: v0.9.0 | See PINNED_IMAGES.md
 
 services:
   vllm:
-    image: vllm/vllm-openai:latest
+    # v0.9.0 — upgrade tag to vllm/vllm-openai:v0.9.0 on next bump
+    image: vllm/vllm-openai@sha256:d9a5c1c1614c959fde8d2a4d68449db184572528a6055afdd0caf1e66fb51504
     container_name: vllm_server
     restart: unless-stopped
     runtime: nvidia
