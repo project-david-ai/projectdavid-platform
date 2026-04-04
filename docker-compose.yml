@@ -226,19 +226,19 @@ services:
   # ---------------------------------------------------------------------------
 
   inference-worker:
+    # Ray HEAD node + Ray Serve inference mesh.
+    # Owns the GPU. VLLM_BASE_URL on the api points to this container.
+    # Worker machines join this node via: pdavid worker --join <this-machine-ip>
     image: thanosprime/projectdavid-core-inference-worker:latest
     container_name: inference_worker
     restart: unless-stopped
-    profiles: [ "training" ]
+    profiles: ["training"]
     runtime: nvidia
     shm_size: '5gb'
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    devices:
-      - /dev/net/tun
     environment:
       - NODE_ID=${NODE_ID:-}
+      # RAY_ADDRESS: blank = this node is the Ray HEAD.
+      # Set to ray://<head_ip>:<port> when joining an existing cluster.
       - RAY_ADDRESS=${RAY_ADDRESS:-}
       - RAY_DASHBOARD_PORT=${RAY_DASHBOARD_PORT:-8265}
       - RAY_CLIENT_SERVER_PORT=${RAY_CLIENT_SERVER_PORT:-10001}
@@ -253,9 +253,9 @@ services:
       - PYTHONUNBUFFERED=1
       - RAY_IGNORE_VERSION_MISMATCH=1
     ports:
-      - "8002:8000"
-      - "8265:8265"
-      - "10001:10001"
+      - "8002:8000"    # Ray Serve HTTP (VLLM_BASE_URL resolves here)
+      - "8265:8265"    # Ray dashboard — http://localhost:8265
+      - "10001:10001"  # Ray client server (worker nodes join via this)
     volumes:
       - ${SHARED_PATH:-./shared_data}:/mnt/training_data
       - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
@@ -269,7 +269,8 @@ services:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [ gpu ]
+              capabilities: [gpu]
+
   training-worker:
     # Fine-tuning job runner. Redis queue consumer.
     # No Ray ownership. No GPU authority. Depends on inference-worker for
