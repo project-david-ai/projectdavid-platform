@@ -1,3 +1,10 @@
+## [1.30.3](https://github.com/project-david-ai/projectdavid-platform/compare/v1.30.2...v1.30.3) (2026-04-05)
+
+
+### Bug Fixes
+
+* remove /.dockerenv guard, respect RAY_NODE_IP_ADDRESS in ray.init() ([7344396](https://github.com/project-david-ai/projectdavid-platform/commit/73443969263d26b07706e326c56aec0e27fa77a7))
+
 ## [1.30.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.30.1...v1.30.2) (2026-04-04)
 
 
