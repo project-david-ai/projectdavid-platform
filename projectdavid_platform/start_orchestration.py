@@ -73,7 +73,7 @@ import typer
 
 
 def _running_in_docker() -> bool:
-    return os.getenv("RUNNING_IN_DOCKER") == "1" or Path("/.dockerenv").exists()
+    return os.getenv("RUNNING_IN_DOCKER") == "1"
 
 
 if _running_in_docker():
