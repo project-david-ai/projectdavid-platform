@@ -1,3 +1,10 @@
+# [1.31.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.30.3...v1.31.0) (2026-04-05)
+
+
+### Features
+
+* **platform:** expose Redis port and add Tailscale env vars for scale-out worker nodes ([039eac5](https://github.com/project-david-ai/projectdavid-platform/commit/039eac599e35cb7606ac397ce39eb09d6f7715b0))
+
 ## [1.30.3](https://github.com/project-david-ai/projectdavid-platform/compare/v1.30.2...v1.30.3) (2026-04-05)
 
 
