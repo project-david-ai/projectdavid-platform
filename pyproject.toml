@@ -48,7 +48,8 @@ dev = [
   "safety",
   "build",
   "twine",
-  "types-PyYAML",         # Type stubs for YAML
+  "cryptography>=42.0.0",         # Type stubs for YAML
+
 ]
 
 [tool.setuptools.package-data]
