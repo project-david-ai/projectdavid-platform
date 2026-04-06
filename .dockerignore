@@ -1,4 +1,5 @@
-
+.pdavid.lic
+*.pdavid.lic
 docker-compose.runtime.yml
 
 docker-compose.template.yml

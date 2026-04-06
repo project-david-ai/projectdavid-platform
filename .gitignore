@@ -169,3 +169,14 @@ docker-compose.runtime.yml
 #.idea/
 
 .idea/
+
+
+# Project David license files — never commit these
+.pdavid.lic
+*.pdavid.lic
+
+# Private key — never commit this
+.pdavid/
+~/.pdavid/
+private.key
+*.key
