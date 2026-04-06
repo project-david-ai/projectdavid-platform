@@ -1,3 +1,22 @@
+# [1.32.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.31.2...v1.32.0) (2026-04-06)
+
+
+### Bug Fixes
+
+* **deps:** trigger release for pinned image digests ([a2b7788](https://github.com/project-david-ai/projectdavid-platform/commit/a2b77884e37cbe932260d8d5bd8e570a55d94ff2))
+* **inference-worker:** add NET_ADMIN and tun device for kernel-mode Tailscale ([125b473](https://github.com/project-david-ai/projectdavid-platform/commit/125b4733664ced54ade0ab5af5fa08ef345306da))
+* **platform:** fix mypy None attribute errors in license validator ([ce2422b](https://github.com/project-david-ai/projectdavid-platform/commit/ce2422b7bb0c3abd283919c4cfd2055dc76421f8))
+* **platform:** remove unused imports and f-strings in license files ([7481c4a](https://github.com/project-david-ai/projectdavid-platform/commit/7481c4a488d446f09d7b3855ecc46ae685a163c5))
+* **platform:** remove unused serialization imports from license validator ([db1adb1](https://github.com/project-david-ai/projectdavid-platform/commit/db1adb1be1dd4dbc5449242cb2471de0abfba778))
+* **platform:** trigger release build ([8ea8828](https://github.com/project-david-ai/projectdavid-platform/commit/8ea8828c3d84dbefaf9a2bd1b71793fd0470364a))
+* **projectdavid_platform/inference-worker:** add NET_ADMIN and tun device for kernel-mode Tailscale ([4c2039c](https://github.com/project-david-ai/projectdavid-platform/commit/4c2039cdcac88f12ce0fcf55bfdc8068da609d93))
+
+
+### Features
+
+* **platform:** add Ed25519 offline license enforcement to pdavid startup ([b514294](https://github.com/project-david-ai/projectdavid-platform/commit/b51429473c9fa9f76f5c05f9294b64792e682e3b))
+* **platform:** expose Redis port and add Tailscale env vars for scale-out worker nodes ([4936d6b](https://github.com/project-david-ai/projectdavid-platform/commit/4936d6bc6703c33799ff12b5a8d1716c37627e8e))
+
 ## [1.31.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.31.1...v1.31.2) (2026-04-06)
 
 
