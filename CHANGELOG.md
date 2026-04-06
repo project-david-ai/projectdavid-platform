@@ -1,3 +1,10 @@
+## [1.31.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.31.1...v1.31.2) (2026-04-06)
+
+
+### Bug Fixes
+
+* **projectdavid_platform/inference-worker:** add NET_ADMIN and tun device for kernel-mode Tailscale ([92c0a89](https://github.com/project-david-ai/projectdavid-platform/commit/92c0a89b8148a8a6245173995a4285580f6b16f2))
+
 ## [1.31.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.31.0...v1.31.1) (2026-04-06)
 
 
