@@ -101,9 +101,8 @@ try:
 
     _TUNNEL_AVAILABLE = True
 except ImportError:
-    _tunnel_app = None
+    _tunnel_app = None  # type: ignore[assignment]
     _TUNNEL_AVAILABLE = False
-
 
 # ---------------------------------------------------------------------------
 # Logging
