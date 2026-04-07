@@ -92,6 +92,19 @@ try:
 except ImportError:
     _LICENSE_AVAILABLE = False
 
+
+# ---------------------------------------------------------------------------
+# Tunnel subcommand
+# ---------------------------------------------------------------------------
+try:
+    from projectdavid_platform.tunnel import app as _tunnel_app
+
+    _TUNNEL_AVAILABLE = True
+except ImportError:
+    _tunnel_app = None
+    _TUNNEL_AVAILABLE = False
+
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -179,6 +192,10 @@ app = typer.Typer(
     help=_TYPER_HELP,
     add_completion=False,
 )
+
+# Register tunnel subcommand
+if _TUNNEL_AVAILABLE:
+    app.add_typer(_tunnel_app, name="tunnel")
 
 
 # ---------------------------------------------------------------------------
