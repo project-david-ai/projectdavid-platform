@@ -57,7 +57,12 @@ RECONNECT_BACKOFF = [5, 10, 20, 40, 80, 120]
 DEFAULT_FORWARDS = [
     (10001, "localhost", 10001, "Ray client server"),
     (6379, "localhost", 6379, "Redis"),
-    (3307, "localhost", 3307, "MySQL"),
+    (
+        3308,
+        "localhost",
+        3307,
+        "MySQL",
+    ),  # remote 3308 → local 3307 (avoids port conflict)
 ]
 
 ENV_FILE = ".env"
@@ -146,6 +151,10 @@ def _extract_ports_from_env(env: Dict[str, str]) -> List[Tuple[int, str, int, st
     """
     Reads DATABASE_URL and REDIS_URL from .env and builds the -R forward list.
     Falls back to DEFAULT_FORWARDS if env vars are absent or unparseable.
+
+    MySQL remote port is always 3308 to avoid conflicts with the well-known
+    3306 port on RunPod worker nodes. Local port maps to the Docker host port
+    (typically 3307). The worker's DATABASE_URL must use localhost:3308.
     """
     forwards = []
 
@@ -162,13 +171,15 @@ def _extract_ports_from_env(env: Dict[str, str]) -> List[Tuple[int, str, int, st
         forwards.append((6379, "localhost", 6379, "Redis"))
 
     # MySQL — extract host port from DATABASE_URL
+    # Remote port is always 3308 to avoid conflicts on the worker side.
+    # Local port maps to the Docker host port (typically 3307).
     db_url = env.get("DATABASE_URL", "")
     db_port = 3307
     if db_url:
         m = re.search(r":(\d+)/", db_url)
         if m:
             db_port = int(m.group(1))
-    forwards.append((db_port, "localhost", db_port, "MySQL"))
+    forwards.append((3308, "localhost", db_port, "MySQL"))
 
     # Ray client server — always 10001
     forwards.insert(0, (10001, "localhost", 10001, "Ray client server"))
@@ -458,7 +469,6 @@ class TunnelRunner:
 
     def run(self) -> None:
         """Main entry point — connect and block until stopped."""
-        # Print summary
         typer.echo(f"  {c('Host', C.DIM)}        : {self.host}:{self.port}")
         longest = max(len(lbl) for _, _, _, lbl in self.forwards)
         for i, (remote_port, local_host, local_port, label) in enumerate(self.forwards):
@@ -483,7 +493,6 @@ class TunnelRunner:
         elapsed = time.time() - t0
 
         if not connected or (self._proc and self._proc.poll() is not None):
-            # Read stderr for diagnostics
             stderr_out = ""
             if self._proc:
                 try:
@@ -530,7 +539,6 @@ class TunnelRunner:
             typer.echo("  Check status : pdavid tunnel status")
             typer.echo(f"  Stop         : pdavid tunnel stop --name {self.name}")
             typer.echo("")
-            # Detach — watchdog keeps running
             self._start_watchdog()
             return
 
@@ -616,7 +624,6 @@ def _resolve_forwards(
     if forwards_override:
         result = []
         for f in forwards_override:
-            # format: remote_port:local_host:local_port:label
             parts = f.split(":")
             if len(parts) < 3:
                 typer.echo(
@@ -660,7 +667,7 @@ def connect(
         None,
         "--forward",
         "-f",
-        help="Additional port forward: remote:local_host:local_port[:label]",
+        help="Port forward spec: remote:local_host:local_port[:label]",
     ),
     env_file: str = typer.Option(
         ".env", "--env-file", help="Path to .env file for auto port detection"
@@ -673,21 +680,14 @@ def connect(
     back to your local HEAD node. Port configuration is read automatically
     from your .env file.
 
-    Examples:
-
-      pdavid tunnel connect --host root@157.157.221.29 --port 19938
-
-      pdavid tunnel connect --host root@157.157.221.29 --port 19938 --name runpod-1 --background
-
-      pdavid tunnel connect --host root@157.157.221.29 --port 19938 \\
-          --forward 10001:localhost:10001:Ray \\
-          --forward 6379:localhost:6379:Redis
+    Examples:\n
+      pdavid tunnel connect --host root@157.157.221.29 --port 19938\n
+      pdavid tunnel connect --host root@157.157.221.29 --port 19938 --name runpod-1 --background\n
     """
     if not shutil.which("ssh"):
         typer.echo("[error] ssh not found in PATH. Install OpenSSH.", err=True)
         raise SystemExit(1)
 
-    # Check for existing tunnel with same name
     state = _load_state()
     if name in state and state[name].get("status") in ("connected", "connecting"):
         typer.echo(
