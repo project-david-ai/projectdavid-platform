@@ -1,3 +1,16 @@
+# [1.33.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.32.1...v1.33.0) (2026-04-07)
+
+
+### Bug Fixes
+
+* **platform:** suppress mypy assignment error on optional tunnel import ([f1c30c1](https://github.com/project-david-ai/projectdavid-platform/commit/f1c30c1c09baa8061a92efc6e137b6f51cf8082d))
+* **tunnel:** remove unused timezone import and bare f-string ([a600614](https://github.com/project-david-ai/projectdavid-platform/commit/a600614a2156dd62d357491eb384c165ff666079))
+
+
+### Features
+
+* **platform:** wire pdavid tunnel subcommand into orchestrator ([0fb536e](https://github.com/project-david-ai/projectdavid-platform/commit/0fb536e6e488f53054b66c23110341516202fc32))
+
 ## [1.32.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.32.0...v1.32.1) (2026-04-07)
 
 
