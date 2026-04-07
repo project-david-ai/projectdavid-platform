@@ -250,6 +250,8 @@ services:
       - HF_HOME=/root/.cache/huggingface
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HUB_OFFLINE=0
       - PYTHONUNBUFFERED=1
       - RAY_IGNORE_VERSION_MISMATCH=1
     ports:
@@ -294,6 +296,8 @@ services:
       - HF_HOME=/root/.cache/huggingface
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HUB_OFFLINE=0
       - PYTHONUNBUFFERED=1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
