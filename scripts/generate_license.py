@@ -29,11 +29,6 @@ from pathlib import Path
 
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import (
-        Encoding,
-        NoEncryption,
-        PrivateFormat,
-    )
 except ImportError:
     print("[error] pip install cryptography")
     sys.exit(1)

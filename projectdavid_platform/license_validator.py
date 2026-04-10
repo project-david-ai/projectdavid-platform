@@ -12,7 +12,6 @@ License file (.pdavid.lic) is placed in the project root by the customer.
 import base64
 import json
 import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -22,8 +21,13 @@ import typer
 # ─── PUBLIC KEY ─────────────────────────────────────────────────────────────
 # Generated once with scripts/generate_keypair.py
 # Private key stays with the author. This public key is safe to distribute.
-# Replace this with your actual generated public key.
-PDAVID_PUBLIC_KEY = "yw8e90FT7HvtBT9cPH9cS1xTX7I3gR3dlGCvU6h4ZJg="
+# Override at runtime via PDAVID_PUBLIC_KEY_B64 env var (preferred for deployments).
+_PDAVID_PUBLIC_KEY_DEFAULT = "yw8e90FT7HvtBT9cPH9cS1xTX7I3gR3dlGCvU6h4ZJg="
+
+
+def _get_public_key() -> str:
+    return os.environ.get("PDAVID_PUBLIC_KEY_B64", _PDAVID_PUBLIC_KEY_DEFAULT)
+
 
 # ─── CONSTANTS ───────────────────────────────────────────────────────────────
 LICENSE_FILENAME = ".pdavid.lic"
@@ -78,7 +82,6 @@ def validate_license(license_path: Optional[str] = None) -> LicenseResult:
     try:
         from cryptography.exceptions import InvalidSignature
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
     except ImportError:
         # cryptography not installed — skip validation (dev mode)
         return LicenseResult(
@@ -140,7 +143,7 @@ def validate_license(license_path: Optional[str] = None) -> LicenseResult:
 
     # ── Verify signature ─────────────────────────────────────────────────────
     try:
-        pub_bytes = base64.b64decode(PDAVID_PUBLIC_KEY)
+        pub_bytes = base64.b64decode(_get_public_key())
         sig_bytes = base64.b64decode(signature_b64)
         pub_key = Ed25519PublicKey.from_public_bytes(pub_bytes)
         payload_bytes = json.dumps(
@@ -212,10 +215,10 @@ def enforce_license(verbose: bool = False) -> None:
 
     if result.status == LicenseStatus.GRACE:
         days_left = GRACE_PERIOD_DAYS - result.days_in_grace
-        typer.echo(f"  ⚠️  No license file found.")
+        typer.echo("  ⚠️  No license file found.")
         typer.echo(f"  Grace period    : {days_left} day(s) remaining")
         typer.echo(
-            f"\n  Project David Platform requires a commercial license for production use."
+            "\n  Project David Platform requires a commercial license for production use."
         )
         typer.echo(f"  Contact : {CONTACT_EMAIL}")
         typer.echo(f"  Website : {CONTACT_URL}")
