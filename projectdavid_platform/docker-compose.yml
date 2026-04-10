@@ -21,13 +21,23 @@
 # All third-party images are pinned by SHA256 digest for immutability.
 # Tags are human-readable hints only — Docker enforces the digest.
 # See PINNED_IMAGES.md for the full registry, upgrade policy, and backlog.
-# Pinned: 2026-04-07 | Stack: base + training | Core: v1.27.x
+# Pinned: 2026-04-04 | Stack: base + training | GPU: RTX 4060 CUDA 12.8
 #
 # NODE_IP / TAILSCALE (opt-in)
 # ─────────────────────────────
-# Set NODE_IP to the Tailscale IP of this machine to enable Tailscale-based
-# cluster networking. Leave unset for local-only or airgapped deployments.
-# See docs: https://docs.projectdavid.co.uk/docs/admin-vllm
+# Set NODE_IP in .env to this machine's Tailscale IP to enable
+# Tailscale-based cluster networking with remote worker nodes.
+# Leave unset for local-only or airgapped deployments.
+#
+# TAILSCALE IP PERSISTENCE
+# ─────────────────────────
+# tailscale_state volume persists Tailscale identity across container
+# recreates — same 100.x.x.x IP every time, no re-auth required.
+#
+# SSH TUNNEL
+# ──────────
+# pdavid tunnel has been removed. Cluster networking is now handled
+# exclusively via Tailscale overlay. See docs/sovereign-cluster.md.
 
 services:
 
@@ -127,8 +137,7 @@ services:
       - my_custom_network
 
   api:
-    # v1.27.x — upgrade to next core release on next bump
-    image: thanosprime/projectdavid-core-api@sha256:39195509a2ae854c353cf8fcf7867be66162c506b764f1154a761f0c083986d6
+    image: thanosprime/projectdavid-core-api:latest
     container_name: fastapi_cosmic_catalyst
     restart: always
     env_file:
@@ -176,8 +185,7 @@ services:
       - my_custom_network
 
   sandbox:
-    # v1.27.x — upgrade to next core release on next bump
-    image: thanosprime/projectdavid-core-sandbox@sha256:79d74dbb1e9866edc5d8a1ab5e04806a2b163129310008fe6068a471c3e5c99c
+    image: thanosprime/projectdavid-core-sandbox:latest
     container_name: sandbox_api
     restart: always
     cap_add:
@@ -237,9 +245,10 @@ services:
   inference-worker:
     # Ray HEAD node + Ray Serve inference mesh.
     # Owns the GPU. VLLM_BASE_URL on the api points to this container.
-    # Worker machines join this node via: pdavid worker --join <this-machine-ip>
-    # v1.27.x — upgrade to next core release on next bump
-    image: thanosprime/projectdavid-core-inference-worker@sha256:a2b4dcfdb81e2093438064daa9c9ce33803a73ad23091978b7b80b164535c6f4
+    # Worker machines join this node via Tailscale overlay — no SSH tunnel needed.
+    # Tailscale state persisted in tailscale_state volume — IP stable across
+    # container recreates, no re-auth required after first run.
+    image: thanosprime/projectdavid-core-inference-worker:latest
     container_name: inference_worker
     restart: unless-stopped
     profiles: ["training"]
@@ -267,15 +276,21 @@ services:
       - PYTHONUNBUFFERED=1
       - RAY_IGNORE_VERSION_MISMATCH=1
       # Tailscale cluster networking (opt-in).
-      # Set NODE_IP to this machine's Tailscale IP to enable bidirectional
-      # Ray cluster communication with remote worker nodes.
+      # Set NODE_IP in .env to this machine's Tailscale IP to advertise
+      # it to the Ray cluster for bidirectional worker node communication.
       # Leave unset for local-only or airgapped deployments.
       - NODE_IP=${NODE_IP:-}
+      # Tailscale auth key (opt-in).
+      # Set TAILSCALE_AUTH_KEY in .env to enable Tailscale on this container.
+      # Leave unset for local-only or airgapped deployments.
+      - TAILSCALE_AUTH_KEY=${TAILSCALE_AUTH_KEY:-}
     ports:
       - "8002:8000"    # Ray Serve HTTP (VLLM_BASE_URL resolves here)
       - "8265:8265"    # Ray dashboard — http://localhost:8265
       - "10001:10001"  # Ray client server (worker nodes join via this)
+      - "6379:6379"    # Ray GCS (worker nodes join via this)
     volumes:
+      - tailscale_state:/var/lib/tailscale
       - ${SHARED_PATH:-./shared_data}:/mnt/training_data
       - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
     depends_on:
@@ -294,8 +309,7 @@ services:
     # Fine-tuning job runner. Redis queue consumer.
     # No Ray ownership. No GPU authority. Depends on inference-worker for
     # Ray Serve deployment of fine-tuned models post-training.
-    # v1.27.x — upgrade to next core release on next bump
-    image: thanosprime/projectdavid-core-training-worker@sha256:e10f351081de1e927214a2a0e68a6e3c539b0480357ac77bf877c0a14177469a
+    image: thanosprime/projectdavid-core-training-worker:latest
     container_name: training_worker
     restart: unless-stopped
     profiles: ["training"]
@@ -337,8 +351,7 @@ services:
   training-api:
     # REST API for datasets, training jobs, and model registry.
     # No GPU required. Queries Ray via dashboard HTTP API only.
-    # v1.27.x — upgrade to next core release on next bump
-    image: thanosprime/projectdavid-core-training-api@sha256:e10f351081de1e927214a2a0e68a6e3c539b0480357ac77bf877c0a14177469a
+    image: thanosprime/projectdavid-core-training-api:latest
     container_name: training_api
     restart: unless-stopped
     profiles: ["training"]
@@ -368,6 +381,7 @@ volumes:
   mysql_data:
   qdrant_storage:
   redis_data:
+  tailscale_state:
 
 networks:
   my_custom_network:

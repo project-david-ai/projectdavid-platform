@@ -92,6 +92,7 @@ try:
 except ImportError:
     _LICENSE_AVAILABLE = False
 
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -1527,6 +1528,10 @@ class WorkerNodeOrchestrator:
             "PYTHONUNBUFFERED=1",
             "--env",
             "RAY_IGNORE_VERSION_MISMATCH=1",
+            "--env",
+            f"HF_TOKEN={os.environ.get('HF_TOKEN', '')}",
+            "--env",
+            "HF_HUB_OFFLINE=0",
             "--restart",
             "unless-stopped",
             image,

@@ -1,3 +1,10 @@
+# [1.35.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.34.0...v1.35.0) (2026-04-08)
+
+
+### Features
+
+* **platform:** replace SSH tunnel with Tailscale overlay for cluster networking ([15b55d3](https://github.com/project-david-ai/projectdavid-platform/commit/15b55d3df906a10038ef305686ded2ff35009f88))
+
 # [1.34.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.33.2...v1.34.0) (2026-04-07)
 
 
