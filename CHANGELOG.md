@@ -1,3 +1,21 @@
+# [1.36.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.35.0...v1.36.0) (2026-04-10)
+
+
+### Bug Fixes
+
+* assert Optional fields before use in enforce_license to satisfy mypy ([4a079ff](https://github.com/project-david-ai/projectdavid-platform/commit/4a079ffa160d1b7cb700f4298808e40991695a5d))
+* **deps:** trigger release for pinned image digests ([8d43454](https://github.com/project-david-ai/projectdavid-platform/commit/8d4345433111ccbb26a254d6c115d8aa3b17182c))
+* **nginx:** add /v1/deployments/ route and Rust router /v1/completions endpoint ([2ea81e7](https://github.com/project-david-ai/projectdavid-platform/commit/2ea81e7cfecd5f4ce024ecfa291059a77af64f33))
+* **platform:** trigger release build ([c14e6d0](https://github.com/project-david-ai/projectdavid-platform/commit/c14e6d00a9ec8b7e786c7fcdd27fd60d2fe84cd9))
+* remove unused serialization imports; load public key from env var ([cfceabd](https://github.com/project-david-ai/projectdavid-platform/commit/cfceabdd9f60843c07b1409b842c16dae802348b))
+
+
+### Features
+
+* **platform:** add Ed25519 offline license enforcement to pdavid startup ([d4dac3d](https://github.com/project-david-ai/projectdavid-platform/commit/d4dac3dd0d710f9b8946fda28ed810566f6c0a84))
+* **platform:** expose Redis port and add Tailscale env vars for scale-out worker nodes ([81be9d0](https://github.com/project-david-ai/projectdavid-platform/commit/81be9d016ca50fbff0522e608b1f58b137116eca))
+* **stack:** add pd_router service to base stack, update nginx depends_on ([5bad191](https://github.com/project-david-ai/projectdavid-platform/commit/5bad191f5f3f9102e47b21e9f226701f74d1c00a))
+
 ## [1.31.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.31.1...v1.31.2) (2026-04-06)
 
 
