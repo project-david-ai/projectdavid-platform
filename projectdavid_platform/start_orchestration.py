@@ -48,6 +48,10 @@ import typer
 #   pdavid configure --set HF_TOKEN=hf_abc123
 #   pdavid configure --interactive
 #   pdavid bootstrap-admin
+#
+#   CACHE INSPECTION
+#   pdavid cache                        # Scan HF cache in inference_worker
+#   pdavid cache --node inference_worker_2   # Target a specific worker node
 # ---------------------------------------------------------------------------
 
 
@@ -1885,6 +1889,117 @@ def bootstrap_admin(
     typer.echo(f"  ADMIN_API_KEY : {admin_key}")
     typer.echo("  Store this key securely — it will not be shown again.")
     typer.echo("=" * 60 + "\n")
+
+
+@app.command(name="cache")
+def cache_inspect(
+    node: str = typer.Option(
+        INFERENCE_WORKER_CONTAINER,
+        "--node",
+        help="Container name to inspect. Defaults to inference_worker.",
+    ),
+    list_cache: bool = typer.Option(
+        False, "--list", "-l", help="Scan and list all cached models."
+    ),
+    download: Optional[str] = typer.Option(
+        None,
+        "--download",
+        "-d",
+        help="Download a model into the cache. Pass the HuggingFace repo ID.",
+    ),
+    delete: Optional[str] = typer.Option(
+        None, "--delete", help="Remove a specific model from the cache by repo ID."
+    ),
+    disk_usage: bool = typer.Option(
+        False, "--disk-usage", "-u", help="Show disk usage per cached model."
+    ),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
+) -> None:
+    """
+    Manage the HuggingFace model cache inside the inference worker container.
+
+    Examples:\n
+      pdavid cache --list\n
+      pdavid cache --download unsloth/qwen2.5-1.5b-instruct-unsloth-bnb-4bit\n
+      pdavid cache --delete unsloth/qwen2.5-1.5b-instruct-unsloth-bnb-4bit\n
+      pdavid cache --disk-usage\n
+      pdavid cache --list --node inference_worker_2\n
+    """
+    args = SimpleNamespace(
+        verbose=verbose, training=False, ollama=False, vllm=False, gpu=False
+    )
+    o = Orchestrator(args)
+
+    if not any([list_cache, download, delete, disk_usage]):
+        # Default to --list if no flag given
+        list_cache = True
+
+    if not o._is_container_running(node):
+        typer.echo(
+            f"\n  [error] Container '{node}' is not running.\n"
+            f"  Start the training stack first:\n"
+            f"    pdavid --mode up --training\n",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    def _exec(cmd: list) -> None:
+        try:
+            result = subprocess.run(
+                ["docker", "exec", node] + cmd,
+                check=True,
+                text=True,
+                capture_output=True,
+                shell=o.is_windows,  # nosec B602
+            )
+            typer.echo(result.stdout)
+            if result.stderr:
+                typer.echo(result.stderr, err=True)
+        except subprocess.CalledProcessError as e:
+            typer.echo(f"\n  [error] Command failed (code {e.returncode}).\n", err=True)
+            if e.stdout:
+                typer.echo(e.stdout)
+            if e.stderr:
+                typer.echo(e.stderr, err=True)
+            raise SystemExit(1)
+
+    if list_cache:
+        typer.echo(f"\n  HuggingFace cache — {node}")
+        typer.echo("=" * 60)
+        _exec(["huggingface-cli", "scan-cache"])
+
+    if disk_usage:
+        typer.echo(f"\n  Disk usage per model — {node}")
+        typer.echo("=" * 60)
+        _exec(["du", "-sh", "/root/.cache/huggingface/hub/"])
+        typer.echo("\n  Per model:")
+        _exec(
+            [
+                "bash",
+                "-c",
+                "du -sh /root/.cache/huggingface/hub/models--* 2>/dev/null || echo '  (no models cached)'",
+            ]
+        )
+
+    if download:
+        typer.echo(f"\n  Downloading: {download}")
+        typer.echo("=" * 60)
+        _exec(["huggingface-cli", "download", download])
+        typer.echo(f"\n  Done. Run 'pdavid cache --list --node {node}' to verify.")
+
+    if delete:
+        # Convert repo ID to cache directory name: org/model -> models--org--model
+        cache_name = "models--" + delete.replace("/", "--")
+        cache_path = f"/root/.cache/huggingface/hub/{cache_name}"
+        typer.echo(f"\n  Deleting: {delete}")
+        typer.echo(f"  Path    : {cache_path}")
+        typer.echo("=" * 60)
+        confirmed = typer.confirm(f"  Remove {cache_name} from {node}?", default=False)
+        if not confirmed:
+            typer.echo("  Aborted.")
+            raise SystemExit(0)
+        _exec(["rm", "-rf", cache_path])
+        typer.echo(f"  Deleted. Run 'pdavid cache --list --node {node}' to verify.")
 
 
 def entry_point():
