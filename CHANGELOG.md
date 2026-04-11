@@ -1,3 +1,10 @@
+## [1.36.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.36.0...v1.36.1) (2026-04-11)
+
+
+### Bug Fixes
+
+* **router:** replace curl healthcheck with TCP socket check — curl not present in lean Rust image ([cbb2b4f](https://github.com/project-david-ai/projectdavid-platform/commit/cbb2b4f3764aca32372aedf2487334e2df1051c0))
+
 # [1.36.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.35.0...v1.36.0) (2026-04-10)
 
 
