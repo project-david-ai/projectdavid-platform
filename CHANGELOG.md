@@ -1,3 +1,10 @@
+## [1.36.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.36.1...v1.36.2) (2026-04-11)
+
+
+### Bug Fixes
+
+* **cli:** down_only brings down training profile; guard duplicate --profile injection ([5f82721](https://github.com/project-david-ai/projectdavid-platform/commit/5f82721735a188a761d10c08fc7bb6a1d603113f))
+
 ## [1.36.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.36.0...v1.36.1) (2026-04-11)
 
 
