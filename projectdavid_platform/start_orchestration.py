@@ -57,7 +57,7 @@ import typer
 #   pdavid ray --status                          # Cluster nodes + resource summary
 #   pdavid ray --deployments                     # List active Ray Serve deployments
 #   pdavid ray --gpu                             # nvidia-smi GPU memory usage
-#   pdavid ray --dashboard                       # Print Ray dashboard URL
+#   pdavid ray --dashboard                       # Print Ray dashboard URL (http://localhost:80/ray/)
 #   pdavid ray --kill vllm_dep_WwY4...           # Tear down a deployment by name
 #   pdavid ray --status --node inference_worker_2  # Target a specific node
 # ---------------------------------------------------------------------------
@@ -1016,11 +1016,11 @@ class Orchestrator:
         )
 
         if not is_worker:
-            dashboard_port = os.environ.get("RAY_DASHBOARD_PORT", "8265")
+
             typer.echo(
                 f"\n  ✓ HEAD NODE configured.\n"
                 f"    Ray cluster will start on this machine.\n"
-                f"    Dashboard: http://localhost:{dashboard_port}\n"
+                f"    Dashboard: http://localhost:80/ray/\n"
                 f"    Worker nodes can join with:\n"
                 f"      pdavid worker --join <this-machine-ip>\n"
             )
@@ -2098,8 +2098,7 @@ def ray_manage(
             raise SystemExit(1)
 
     if dashboard:
-        port = os.environ.get("RAY_DASHBOARD_PORT", "8265")
-        typer.echo(f"\n  Ray dashboard: http://localhost:{port}")
+        typer.echo(f"\n  Ray dashboard: http://localhost:80/ray/")
         typer.echo(f"  Cluster nodes, GPU resources, and active Serve deployments.\n")
 
     if status:
