@@ -1018,11 +1018,11 @@ class Orchestrator:
         if not is_worker:
 
             typer.echo(
-                f"\n  ✓ HEAD NODE configured.\n"
-                f"    Ray cluster will start on this machine.\n"
-                f"    Dashboard: http://localhost:80/ray/\n"
-                f"    Worker nodes can join with:\n"
-                f"      pdavid worker --join <this-machine-ip>\n"
+                "\n  ✓ HEAD NODE configured.\n"
+                "    Ray cluster will start on this machine.\n"
+                "    Dashboard: http://localhost:80/ray/\n"
+                "    Worker nodes can join with:\n"
+                "      pdavid worker --join <this-machine-ip>\n"
             )
             return ""
 
@@ -2098,8 +2098,8 @@ def ray_manage(
             raise SystemExit(1)
 
     if dashboard:
-        typer.echo(f"\n  Ray dashboard: http://localhost:80/ray/")
-        typer.echo(f"  Cluster nodes, GPU resources, and active Serve deployments.\n")
+        typer.echo("\n  Ray dashboard: http://localhost:80/ray/")
+        typer.echo("  Cluster nodes, GPU resources, and active Serve deployments.\n")
 
     if status:
         typer.echo(f"\n  Ray cluster status — {node}")
@@ -2169,7 +2169,7 @@ def ray_manage(
                 ),
             ]
         )
-        typer.echo(f"\n  Run 'pdavid ray --deployments' to confirm.")
+        typer.echo("\n  Run 'pdavid ray --deployments' to confirm.")
 
 
 def entry_point():
