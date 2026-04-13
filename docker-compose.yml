@@ -38,6 +38,15 @@
 # ──────────
 # pdavid tunnel has been removed. Cluster networking is now handled
 # exclusively via Tailscale overlay. See docs/sovereign-cluster.md.
+#
+# PORT EXPOSURE POLICY
+# ─────────────────────
+# Only ports that cannot be reached via nginx on :80 are exposed on the host.
+# api (:9000), router (:9100), training-api (:9001), inference-worker HTTP
+# (:8000) are all reachable via nginx — their host port mappings are removed.
+# Ray dashboard (:8265) is routed via nginx /ray/ — host mapping removed.
+# Direct-access ports retained: db (:3307/:3308), Ray client server (:10001),
+# Ray GCS (:6379).
 
 services:
 
@@ -137,7 +146,7 @@ services:
       - my_custom_network
 
   api:
-    image: thanosprime/projectdavid-core-api:1.37.0
+    image: thanosprime/projectdavid-core-api:latest
     container_name: fastapi_cosmic_catalyst
     restart: always
     env_file:
@@ -156,10 +165,7 @@ services:
       - OTEL_TRACES_EXPORTER=otlp
       - OTEL_METRICS_EXPORTER=none
       - OTEL_LOGS_EXPORTER=none
-      # Ollama stub — overridden by docker-compose.ollama.yml when --ollama is used.
       - OLLAMA_BASE_URL=http://localhost:11434/v1
-      # Ray Serve inference endpoint (inference-worker container).
-      # Active when --training is used; stub otherwise.
       - VLLM_BASE_URL=http://inference_worker:8000
       - SHARED_PATH=/app/shared_data
       - ASSISTANTS_BASE_URL=http://localhost:80
@@ -185,7 +191,7 @@ services:
       - my_custom_network
 
   sandbox:
-    image: thanosprime/projectdavid-core-sandbox:1.37.0
+    image: thanosprime/projectdavid-core-sandbox:latest
     container_name: sandbox_api
     restart: always
     cap_add:
@@ -223,29 +229,25 @@ services:
     networks:
       - my_custom_network
 
-  # ---------------------------------------------------------------------------
-  # router — Rust request router (pd_router)
-  # Sits between nginx and FastAPI. Owns the connection pool for the
-  # /v1/completions SSE streaming hot path. Handles concurrent inference
-  # requests without Python GIL contention.
-  # Digest will be pinned in PINNED_IMAGES.md after first production build.
-  # ---------------------------------------------------------------------------
   router:
-    image: thanosprime/projectdavid-core-router:1.37.0
+    # Rust request router (pd_router)
+    # Sits between nginx and FastAPI. Owns the connection pool for the
+    # /v1/completions SSE streaming hot path. Handles concurrent inference
+    # requests without Python GIL contention.
+    # Digest will be pinned in PINNED_IMAGES.md after first production build.
+    image: thanosprime/projectdavid-core-router:latest
     container_name: pd_router
     restart: always
     environment:
       - UPSTREAM_URL=http://api:9000
       - LISTEN_PORT=9100
       - LOG_LEVEL=pd_router=info
-
     healthcheck:
-      test: [ "CMD-SHELL", "echo > /dev/tcp/localhost/9100 2>/dev/null && echo ok || exit 1" ]
+      test: ["CMD-SHELL", "echo > /dev/tcp/localhost/9100 2>/dev/null && echo ok || exit 1"]
       interval: 10s
       timeout: 3s
       start_period: 5s
       retries: 3
-
     depends_on:
       - api
     networks:
@@ -277,7 +279,13 @@ services:
     # Worker machines join this node via Tailscale overlay — no SSH tunnel needed.
     # Tailscale state persisted in tailscale_state volume — IP stable across
     # container recreates, no re-auth required after first run.
-    image: thanosprime/projectdavid-core-inference-worker:1.37.0
+    #
+    # PORT POLICY:
+    #   :8000 (Ray Serve HTTP)  — reachable via nginx /serve/  — no host mapping
+    #   :8265 (Ray dashboard)   — reachable via nginx /ray/    — no host mapping
+    #   :10001 (Ray client)     — worker nodes join via this   — host mapped
+    #   :6379  (Ray GCS)        — worker nodes join via this   — host mapped
+    image: thanosprime/projectdavid-core-inference-worker:latest
     container_name: inference_worker
     restart: unless-stopped
     profiles: ["training"]
@@ -304,20 +312,15 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - PYTHONUNBUFFERED=1
       - RAY_IGNORE_VERSION_MISMATCH=1
-      # Tailscale cluster networking (opt-in).
-      # Set NODE_IP in .env to this machine's Tailscale IP to advertise
-      # it to the Ray cluster for bidirectional worker node communication.
-      # Leave unset for local-only or airgapped deployments.
       - NODE_IP=${NODE_IP:-}
-      # Tailscale auth key (opt-in).
-      # Set TAILSCALE_AUTH_KEY in .env to enable Tailscale on this container.
-      # Leave unset for local-only or airgapped deployments.
       - TAILSCALE_AUTH_KEY=${TAILSCALE_AUTH_KEY:-}
     ports:
-      - "8002:8000"    # Ray Serve HTTP (VLLM_BASE_URL resolves here)
-      - "8265:8265"    # Ray dashboard — http://localhost:8265
-      - "10001:10001"  # Ray client server (worker nodes join via this)
-      - "6379:6379"    # Ray GCS (worker nodes join via this)
+      # Ray client server — worker nodes join via this
+      - "10001:10001"
+      # Ray GCS — worker nodes join via this
+      - "6379:6379"
+      # :8000 removed — reachable via nginx /serve/
+      # :8265 removed — reachable via nginx /ray/
     volumes:
       - tailscale_state:/var/lib/tailscale
       - ${SHARED_PATH:-./shared_data}:/mnt/training_data
@@ -338,7 +341,7 @@ services:
     # Fine-tuning job runner. Redis queue consumer.
     # No Ray ownership. No GPU authority. Depends on inference-worker for
     # Ray Serve deployment of fine-tuned models post-training.
-    image: thanosprime/projectdavid-core-training-worker:1.37.0
+    image: thanosprime/projectdavid-core-training-worker:latest
     container_name: training_worker
     restart: unless-stopped
     profiles: ["training"]
@@ -380,7 +383,10 @@ services:
   training-api:
     # REST API for datasets, training jobs, and model registry.
     # No GPU required. Queries Ray via dashboard HTTP API only.
-    image: thanosprime/projectdavid-core-training-api:1.37.0
+    # Reachable via nginx: /v1/datasets/ /v1/training-jobs/
+    # /v1/fine-tuned-models/ /v1/deployments/ /v1/inference-deployments/
+    # /v1/registry/ — no host port mapping needed.
+    image: thanosprime/projectdavid-core-training-api:latest
     container_name: training_api
     restart: unless-stopped
     profiles: ["training"]
@@ -396,8 +402,6 @@ services:
       - SANDBOX_AUTH_SECRET=${SANDBOX_AUTH_SECRET}
       - SHARED_PATH=/mnt/training_data
       - PYTHONUNBUFFERED=1
-    ports:
-      - "9001:9001"
     volumes:
       - ${SHARED_PATH:-./shared_data}:/mnt/training_data
     depends_on:
