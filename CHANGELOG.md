@@ -1,3 +1,29 @@
+# [1.37.0-dev.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.36.1...v1.37.0-dev.1) (2026-04-13)
+
+
+### Bug Fixes
+
+* **cli:** down_only brings down training profile; guard duplicate --profile injection ([5f82721](https://github.com/project-david-ai/projectdavid-platform/commit/5f82721735a188a761d10c08fc7bb6a1d603113f))
+* **cli:** suppress bandit B602/B607 false positives on Windows shell flag ([c160489](https://github.com/project-david-ai/projectdavid-platform/commit/c160489fc2706907d80bdb5db2de85cbac8c3adb))
+* **deps:** trigger release for pinned image digests ([3c64895](https://github.com/project-david-ai/projectdavid-platform/commit/3c64895accbe66f18ba5edf4d261c1ed419029a7))
+* **inference-worker:** add NET_ADMIN and tun device for kernel-mode Tailscale ([f053f96](https://github.com/project-david-ai/projectdavid-platform/commit/f053f96cceeb0bf8c2f9c21591e9c8ad1c8dc46c))
+* **lint:** suppress ruff F541 f-string and F401 unused import warnings ([0f2dadd](https://github.com/project-david-ai/projectdavid-platform/commit/0f2dadd15cfda5ef585ca2afbfd7dba21ef19cd2))
+* **nginx:** add /v1/deployments/ route and Rust router /v1/completions endpoint ([4e6c370](https://github.com/project-david-ai/projectdavid-platform/commit/4e6c3705491bce7d77fce5618972e451539b3022))
+* **platform:** trigger release build ([7cb9a64](https://github.com/project-david-ai/projectdavid-platform/commit/7cb9a64b311175947a91dd125bb9e75f98ef8e3a))
+* **projectdavid_platform/inference-worker:** add NET_ADMIN and tun device for kernel-mode Tailscale ([8d1deb2](https://github.com/project-david-ai/projectdavid-platform/commit/8d1deb2f7bea334691423095e4d5a54135a1f758))
+* remove /.dockerenv guard, respect RAY_NODE_IP_ADDRESS in ray.init() ([aeb4a41](https://github.com/project-david-ai/projectdavid-platform/commit/aeb4a418f9f65521decf1d899dc830b6893c77b7))
+
+
+### Features
+
+* **cli:** add pdavid cache command — scan, download, delete, and disk-usage for HF model cache inside inference worker containers ([fc7e525](https://github.com/project-david-ai/projectdavid-platform/commit/fc7e5250eaa615f152c0f0db99476a9e199c13a2))
+* **cli:** add pdavid ray command -- status, deployments, gpu, dashboard, and kill for Ray cluster management ([4a0fa79](https://github.com/project-david-ai/projectdavid-platform/commit/4a0fa791bcd658f18afd1dec6cb7e96ec8d0cd73))
+* **cli:** add pdavid ray command; route Ray dashboard through nginx at /ray/; update dashboard URL references ([715d7d8](https://github.com/project-david-ai/projectdavid-platform/commit/715d7d832784f76127eace1611608374228df98e))
+* **infra:** route Ray dashboard via nginx, remove unnecessary host port mappings ([c937191](https://github.com/project-david-ai/projectdavid-platform/commit/c9371912b1c66b40a572cd3645c3e918b88a823f))
+* **platform:** add Ed25519 offline license enforcement to pdavid startup ([3842f1b](https://github.com/project-david-ai/projectdavid-platform/commit/3842f1bb3eedb33004d5acd4de599e4d4f1fed33))
+* **platform:** expose Redis port and add Tailscale env vars for scale-out worker nodes ([65db692](https://github.com/project-david-ai/projectdavid-platform/commit/65db6921834be93d28f9ff89894a1b389d6cc3a5))
+* **stack:** add pd_router service to base stack, update nginx depends_on ([b68d215](https://github.com/project-david-ai/projectdavid-platform/commit/b68d215754589a0ed4ddb6a3572f857070017790))
+
 ## [1.36.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.36.0...v1.36.1) (2026-04-11)
 
 
