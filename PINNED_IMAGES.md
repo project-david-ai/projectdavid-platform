@@ -67,16 +67,16 @@ release. Rebuilt on every core push and version-tracked through semantic-release
 
 ## Tag Upgrade Backlog
 
-These images are pinned by digest but still pull under :1.35.0 or a major
+These images are pinned by digest but still pull under :1.37.0 or a major
 version tag. On next intentional upgrade, replace with the specific stable
 tag alongside the digest for full readability and immutability:
 
-- [ ] qdrant/qdrant:1.35.0 -> qdrant/qdrant:v1.17.0@sha256:1.35.0.
-- [ ] redis:7 -> redis:7.4@sha256:1.35.0.
-- [ ] jaegertracing/all-in-one:1.35.0 -> jaegertracing/all-in-one:1.35.0@sha256:1.35.0.
-- [ ] otel/opentelemetry-collector-contrib:1.35.0 -> otel/opentelemetry-collector-contrib:1.35.0@sha256:1.35.0.
-- [ ] ollama/ollama:1.35.0 -> ollama/ollama:1.35.0@sha256:1.35.0.
-- [ ] vllm/vllm-openai:1.35.0 -> vllm/vllm-openai:v0.9.0@sha256:1.35.0.
-- [ ] searxng/searxng:1.35.0 -> searxng/searxng:1.35.0-c980fa1ef@sha256:1.35.0.
+- [ ] qdrant/qdrant:1.37.0 -> qdrant/qdrant:v1.17.0@sha256:1.37.0.
+- [ ] redis:7 -> redis:7.4@sha256:1.37.0.
+- [ ] jaegertracing/all-in-one:1.37.0 -> jaegertracing/all-in-one:1.37.0@sha256:1.37.0.
+- [ ] otel/opentelemetry-collector-contrib:1.37.0 -> otel/opentelemetry-collector-contrib:1.37.0@sha256:1.37.0.
+- [ ] ollama/ollama:1.37.0 -> ollama/ollama:1.37.0@sha256:1.37.0.
+- [ ] vllm/vllm-openai:1.37.0 -> vllm/vllm-openai:v0.9.0@sha256:1.37.0.
+- [ ] searxng/searxng:1.37.0 -> searxng/searxng:1.37.0-c980fa1ef@sha256:1.37.0.
 - [ ] Evaluate dperson/samba replacement (upstream inactive)
 - [ ] Automate digest capture in CI on each platform release
