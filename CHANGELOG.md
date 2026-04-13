@@ -1,3 +1,15 @@
+# [1.38.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.37.0...v1.38.0) (2026-04-13)
+
+
+### Bug Fixes
+
+* **infra:** pin all custom images to v1.37.0 ([f388e66](https://github.com/project-david-ai/projectdavid-platform/commit/f388e66b11453a0acbebfff89c73bb7a31974210))
+
+
+### Features
+
+* **infra:** route Ray dashboard via nginx, remove unnecessary host port mappings ([efff402](https://github.com/project-david-ai/projectdavid-platform/commit/efff402e6077499718cc06d6b629717d75636f20))
+
 # [1.37.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.36.2...v1.37.0) (2026-04-12)
 
 
