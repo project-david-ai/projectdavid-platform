@@ -972,9 +972,9 @@ class Orchestrator:
 
         if not is_worker:
             typer.echo(
-                f"\n  HEAD NODE configured.\n"
-                f"    Ray cluster will start on this machine.\n"
-                f"    Dashboard: http://localhost:80/ray/\n"
+                "\n  HEAD NODE configured.\n"
+                "    Ray cluster will start on this machine.\n"
+                "    Dashboard: http://localhost:80/ray/\n"
             )
             return ""
 
