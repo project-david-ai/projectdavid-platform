@@ -310,7 +310,7 @@ class Orchestrator:
         "ASSISTANTS_BASE_URL": "http://localhost:80",
         "SANDBOX_SERVER_URL": "http://sandbox:8000",
         "DOWNLOAD_BASE_URL": "http://localhost:80/v1/files/download",
-        "HF_TOKEN": "",
+        "HF_TOKEN": "",  # nosec B105 — empty default, user-supplied at runtime
         "HF_CACHE_PATH": "",
         "BASE_URL_HEALTH": "http://localhost:80/v1/health",
         "SHELL_SERVER_URL": "ws://sandbox:8000/ws/computer",
