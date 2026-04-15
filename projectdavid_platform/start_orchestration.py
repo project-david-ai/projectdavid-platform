@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata
 import importlib.resources
 import logging
@@ -60,6 +61,10 @@ import typer
 #   pdavid ray --dashboard                       # Print Ray dashboard URL (http://localhost:80/ray/)
 #   pdavid ray --kill vllm_dep_WwY4...           # Tear down a deployment by name
 #   pdavid ray --status --node inference_worker_2  # Target a specific node
+#
+#   COMPOSE-FILE AUDIT
+#   pdavid audit                        # Interactive — prompts to replace stale files
+#   pdavid audit --check                # CI-safe — exits 1 if any files are stale
 # ---------------------------------------------------------------------------
 
 
@@ -126,9 +131,24 @@ CHANGELOG_URL = "https://github.com/project-david-ai/platform/blob/master/CHANGE
 
 INFERENCE_WORKER_CONTAINER = "inference_worker"
 
+# Files bootstrapped into the CWD on first run (skipped if already present).
 _BUNDLED_CONFIGS = [
     ("docker-compose.yml", "docker-compose.yml"),
     ("docker-compose.ollama.yml", "docker-compose.ollama.yml"),
+    ("docker/nginx/nginx.conf", "docker/nginx/nginx.conf"),
+    ("docker/otel/otel-config.yaml", "docker/otel/otel-config.yaml"),
+    ("docker/searxng/settings.yml", "docker/searxng/settings.yml"),
+]
+
+# All files managed by the package that should be audited on upgrade.
+# Superset of _BUNDLED_CONFIGS — includes overlay compose files that are
+# not bootstrapped on first-run but are still shipped and should stay current.
+_AUDITED_FILES: list = [
+    ("docker-compose.yml", "docker-compose.yml"),
+    ("docker-compose.ollama.yml", "docker-compose.ollama.yml"),
+    ("docker-compose.vllm.yml", "docker-compose.vllm.yml"),
+    ("docker-compose.training.yml", "docker-compose.training.yml"),
+    ("docker-compose.gpu.yml", "docker-compose.gpu.yml"),
     ("docker/nginx/nginx.conf", "docker/nginx/nginx.conf"),
     ("docker/otel/otel-config.yaml", "docker/otel/otel-config.yaml"),
     ("docker/searxng/settings.yml", "docker/searxng/settings.yml"),
@@ -183,7 +203,8 @@ _TYPER_HELP = (
     "Scale-out — add a second GPU node to the cluster:\n"
     "  pdavid worker --join <head-node-ip>\n\n"
     "Config:     pdavid configure --set HF_TOKEN=hf_abc123\n"
-    "Admin:      pdavid bootstrap-admin"
+    "Admin:      pdavid bootstrap-admin\n"
+    "Audit:      pdavid audit"
 )
 
 app = typer.Typer(
@@ -269,7 +290,7 @@ class Orchestrator:
         "ASSISTANTS_BASE_URL": "http://localhost:80",
         "SANDBOX_SERVER_URL": "http://sandbox:8000",
         "DOWNLOAD_BASE_URL": "http://localhost:80/v1/files/download",
-        "HF_TOKEN": "",  # nosec B105
+        "HF_TOKEN": "",
         "HF_CACHE_PATH": "",
         "BASE_URL_HEALTH": "http://localhost:80/v1/health",
         "SHELL_SERVER_URL": "ws://sandbox:8000/ws/computer",
@@ -379,6 +400,7 @@ class Orchestrator:
             self.log.setLevel(logging.DEBUG)
 
         self._ensure_config_files()
+        self._audit_compose_files()
 
         self.base_compose = _resolve_compose_file(BASE_COMPOSE_FILE)
         self.ollama_compose = _resolve_compose_file(OLLAMA_COMPOSE_FILE)
@@ -499,6 +521,178 @@ class Orchestrator:
                 + "\n".join(f"    {f}" for f in copied)
                 + "\n  Edit them freely — pdavid will never overwrite local copies.\n"
             )
+
+    # ------------------------------------------------------------------
+    # Compose-file audit
+    # ------------------------------------------------------------------
+
+    def _file_sha256(self, path: Path) -> str:
+        """Return the first 12 hex chars of the SHA-256 digest of a file."""
+        h = hashlib.sha256()
+        h.update(path.read_bytes())
+        return h.hexdigest()[:12]
+
+    def _bundled_sha256(self, pkg_rel: str) -> Optional[str]:
+        """Return the first 12 hex chars of the SHA-256 of the bundled file, or None."""
+        try:
+            pkg_files = importlib.resources.files(PACKAGE_NAME)
+            resource = pkg_files
+            for part in pkg_rel.split("/"):
+                resource = resource / part
+            with importlib.resources.as_file(resource) as src:
+                return self._file_sha256(Path(src))
+        except Exception:
+            return None
+
+    def _audit_compose_files(self, *, interactive: bool = True) -> List[Path]:
+        """
+        Compare every locally-present managed file against its bundled counterpart.
+
+        Collects stale files (local hash != bundled hash), prints a summary table,
+        and — when *interactive* is True — offers a single Y/N prompt to replace
+        them all, backing up originals to .pdavid_backup/<timestamp>_from_<ver>/
+        before any file is touched.
+
+        Returns the list of stale local Paths so callers can act on them.
+        When *interactive* is False the report is printed but no prompt is shown
+        (suitable for CI --check mode).
+        """
+        stale: List[tuple] = []  # (pkg_rel, cwd_rel, local_path, bundled_hash)
+
+        for pkg_rel, cwd_rel in _AUDITED_FILES:
+            local = Path.cwd() / cwd_rel
+            if not local.exists():
+                # Never installed — _ensure_config_files handles first-run.
+                continue
+
+            bundled_hash = self._bundled_sha256(pkg_rel)
+            if bundled_hash is None:
+                self.log.debug(
+                    "Could not read bundled copy of '%s' — skipping audit.", pkg_rel
+                )
+                continue
+
+            local_hash = self._file_sha256(local)
+            if local_hash != bundled_hash:
+                stale.append((pkg_rel, cwd_rel, local, bundled_hash))
+
+        if not stale:
+            self.log.debug(
+                "Compose-file audit: all %d file(s) are current.", len(_AUDITED_FILES)
+            )
+            return []
+
+        # ── Print report ──────────────────────────────────────────────────────
+        typer.echo("\n" + "=" * 62)
+        typer.echo("  Compose-file audit — updates available")
+        typer.echo("=" * 62)
+        typer.echo(
+            f"  {len(stale)} managed file(s) in your CWD differ from the\n"
+            "  version bundled with the installed package.\n"
+        )
+        typer.echo(f"  {'File':<38}  {'local':>12}  {'bundled':>12}")
+        typer.echo("  " + "-" * 66)
+        for _, cwd_rel, local, bundled_hash in stale:
+            local_hash = self._file_sha256(local)
+            typer.echo(f"  {cwd_rel:<38}  {local_hash:>12}  {bundled_hash:>12}")
+        typer.echo()
+        typer.echo(
+            "  Your customisations inside these files will be lost if you\n"
+            "  replace them.  Originals are saved to:\n"
+            "    .pdavid_backup/<timestamp>/\n"
+            "  before any replacement, so you can diff and cherry-pick.\n"
+        )
+        typer.echo("=" * 62)
+
+        stale_paths = [p for _, _, p, _ in stale]
+
+        if not interactive:
+            return stale_paths
+
+        # ── Non-interactive shell guard ────────────────────────────────────────
+        if not sys.stdin.isatty():
+            typer.echo(
+                "\n  [info] Non-interactive environment — skipping replacement.\n"
+                "  Run  pdavid audit  to update interactively.\n"
+            )
+            return stale_paths
+
+        # ── Single Y/N prompt ─────────────────────────────────────────────────
+        replace = typer.confirm(
+            "\n  Replace all stale file(s) with the bundled versions?",
+            default=False,
+        )
+
+        if not replace:
+            typer.echo(
+                "\n  Skipped.  Your existing files are unchanged.\n"
+                "  Re-run  pdavid audit  any time to revisit.\n"
+            )
+            return stale_paths
+
+        # ── Backup ────────────────────────────────────────────────────────────
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        try:
+            pkg_ver = importlib.metadata.version("projectdavid-platform")
+        except importlib.metadata.PackageNotFoundError:
+            pkg_ver = "unknown"
+
+        backup_dir = Path.cwd() / ".pdavid_backup" / f"{ts}_from_{pkg_ver}"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        typer.echo(f"\n  Backing up to: {backup_dir}\n")
+
+        replaced: List[str] = []
+        failed: List[str] = []
+
+        for pkg_rel, cwd_rel, local, _ in stale:
+            dest_backup = backup_dir / cwd_rel
+            try:
+                dest_backup.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(local, dest_backup)
+            except Exception as e:
+                self.log.warning(
+                    "Could not back up '%s': %s — skipping replacement.", cwd_rel, e
+                )
+                failed.append(cwd_rel)
+                continue
+
+            # Replace with bundled copy
+            try:
+                pkg_files = importlib.resources.files(PACKAGE_NAME)
+                resource = pkg_files
+                for part in pkg_rel.split("/"):
+                    resource = resource / part
+                with importlib.resources.as_file(resource) as src:
+                    shutil.copy2(src, local)
+                replaced.append(cwd_rel)
+                typer.echo(f"  ✓  {cwd_rel}")
+            except Exception as e:
+                self.log.error("Could not replace '%s': %s", cwd_rel, e)
+                # Restore backup so the user is never left with a partial file.
+                try:
+                    shutil.copy2(dest_backup, local)
+                    self.log.info("Restored backup of '%s'.", cwd_rel)
+                except Exception as restore_e:
+                    self.log.debug(
+                        "Failed to restore backup of '%s': %s", cwd_rel, restore_e
+                    )
+                failed.append(cwd_rel)
+
+        typer.echo()
+        if replaced:
+            typer.echo(
+                f"  {len(replaced)} file(s) replaced successfully.\n"
+                f"  Originals saved to: {backup_dir}\n"
+            )
+        if failed:
+            typer.echo(
+                f"  {len(failed)} file(s) could not be replaced:\n"
+                + "\n".join(f"    {f}" for f in failed)
+                + "\n"
+            )
+
+        typer.echo("=" * 62 + "\n")
+        return stale_paths
 
     # ------------------------------------------------------------------
     # Preflight
@@ -676,6 +870,7 @@ class Orchestrator:
                 "__pycache__/\n.venv/\nnode_modules/\n*.log\n*.pyc\n.git/\n"
                 ".env*\n.env\n*.sqlite\ndist/\nbuild/\ncoverage/\ntmp/\n*.egg-info/\n"
                 ".pdavid.lic\n"
+                ".pdavid_backup/\n"
             )
 
     def _load_compose_config(self):
@@ -1016,7 +1211,6 @@ class Orchestrator:
         )
 
         if not is_worker:
-
             typer.echo(
                 "\n  ✓ HEAD NODE configured.\n"
                 "    Ray cluster will start on this machine.\n"
@@ -1663,6 +1857,10 @@ def main(
     CONFIGURATION:\n
       pdavid configure --set HF_TOKEN=hf_abc123\n
       pdavid bootstrap-admin\n
+
+    AUDIT:\n
+      pdavid audit\n
+      pdavid audit --check\n
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -1873,6 +2071,40 @@ def configure(
         typer.echo("\n  Restart to apply: pdavid --mode up --force-recreate")
 
 
+@app.command(name="audit")
+def audit_files(
+    check: bool = typer.Option(
+        False,
+        "--check",
+        "-c",
+        help="Report stale files but do not prompt for replacement (exits 1 if any found).",
+    ),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
+) -> None:
+    """
+    Audit managed compose and config files in the current directory.
+
+    Compares each file against the version bundled with the installed package
+    and offers to replace outdated files, saving originals to .pdavid_backup/.
+
+    Examples:\n
+      pdavid audit                # interactive — prompts to replace\n
+      pdavid audit --check        # CI-safe — exits 1 if any files are stale\n
+    """
+    args = SimpleNamespace(
+        verbose=verbose, training=False, ollama=False, vllm=False, gpu=False
+    )
+    o = Orchestrator(args)
+    stale = o._audit_compose_files(interactive=not check)
+
+    if check and stale:
+        typer.echo(
+            f"\n  [check] {len(stale)} stale file(s) found. Run  pdavid audit  to update.\n",
+            err=True,
+        )
+        raise SystemExit(1)
+
+
 @app.command(name="bootstrap-admin")
 def bootstrap_admin(
     db_url: Optional[str] = typer.Option(
@@ -1939,7 +2171,6 @@ def cache_inspect(
     o = Orchestrator(args)
 
     if not any([list_cache, download, delete, disk_usage]):
-        # Default to --list if no flag given
         list_cache = True
 
     if not o._is_container_running(node):
@@ -1996,7 +2227,6 @@ def cache_inspect(
         typer.echo(f"\n  Done. Run 'pdavid cache --list --node {node}' to verify.")
 
     if delete:
-        # Convert repo ID to cache directory name: org/model -> models--org--model
         cache_name = "models--" + delete.replace("/", "--")
         cache_path = f"/root/.cache/huggingface/hub/{cache_name}"
         typer.echo(f"\n  Deleting: {delete}")
@@ -2063,7 +2293,6 @@ def ray_manage(
     o = Orchestrator(args)
 
     if not any([status, deployments, gpu, dashboard, kill]):
-        # Default to --status if no flag given
         status = True
 
     if not o._is_container_running(node):
