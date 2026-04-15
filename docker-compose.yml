@@ -146,7 +146,7 @@ services:
       - my_custom_network
 
   api:
-    image: thanosprime/projectdavid-core-api:1.37.0
+    image: thanosprime/projectdavid-core-api:1.36.0
     container_name: fastapi_cosmic_catalyst
     restart: always
     env_file:
@@ -191,7 +191,7 @@ services:
       - my_custom_network
 
   sandbox:
-    image: thanosprime/projectdavid-core-sandbox:1.37.0
+    image: thanosprime/projectdavid-core-sandbox:1.36.0
     container_name: sandbox_api
     restart: always
     cap_add:
@@ -235,7 +235,7 @@ services:
     # /v1/completions SSE streaming hot path. Handles concurrent inference
     # requests without Python GIL contention.
     # Digest will be pinned in PINNED_IMAGES.md after first production build.
-    image: thanosprime/projectdavid-core-router:1.37.0
+    image: thanosprime/projectdavid-core-router:1.36.0
     container_name: pd_router
     restart: always
     environment:
@@ -285,7 +285,7 @@ services:
     #   :8265 (Ray dashboard)   — reachable via nginx /ray/    — no host mapping
     #   :10001 (Ray client)     — worker nodes join via this   — host mapped
     #   :6379  (Ray GCS)        — worker nodes join via this   — host mapped
-    image: thanosprime/projectdavid-core-inference-worker:1.37.0
+    image: thanosprime/projectdavid-core-inference-worker:1.36.0
     container_name: inference_worker
     restart: unless-stopped
     profiles: ["training"]
@@ -341,7 +341,7 @@ services:
     # Fine-tuning job runner. Redis queue consumer.
     # No Ray ownership. No GPU authority. Depends on inference-worker for
     # Ray Serve deployment of fine-tuned models post-training.
-    image: thanosprime/projectdavid-core-training-worker:1.37.0
+    image: thanosprime/projectdavid-core-training-worker:1.36.0
     container_name: training_worker
     restart: unless-stopped
     profiles: ["training"]
@@ -386,7 +386,7 @@ services:
     # Reachable via nginx: /v1/datasets/ /v1/training-jobs/
     # /v1/fine-tuned-models/ /v1/deployments/ /v1/inference-deployments/
     # /v1/registry/ — no host port mapping needed.
-    image: thanosprime/projectdavid-core-training-api:1.37.0
+    image: thanosprime/projectdavid-core-training-api:1.36.0
     container_name: training_api
     restart: unless-stopped
     profiles: ["training"]
