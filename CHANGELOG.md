@@ -1,3 +1,10 @@
+# [1.40.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.39.0...v1.40.0) (2026-04-17)
+
+
+### Features
+
+* **orchestrator:** always pull from registry, remove build mode, audit on up only ([b17d381](https://github.com/project-david-ai/projectdavid-platform/commit/b17d3817c8d74e9719cbe473f7df898106075813))
+
 # [1.39.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.38.0...v1.39.0) (2026-04-15)
 
 
