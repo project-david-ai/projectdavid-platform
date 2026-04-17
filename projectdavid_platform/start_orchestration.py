@@ -34,7 +34,6 @@ import typer
 #
 #   BASE STACK
 #   pdavid --mode up                        # Core platform only
-#   pdavid --mode up --pull                 # Pull latest images before starting
 #   pdavid --mode up --exclude samba        # Start without a specific service
 #   pdavid --mode up --services api db      # Start specific services only
 #   pdavid --mode logs --follow             # Tail logs
@@ -141,16 +140,9 @@ INFERENCE_WORKER_CONTAINER = "inference_worker"
 # ---------------------------------------------------------------------------
 # Telemetry
 # ---------------------------------------------------------------------------
-# Anonymous opt-in usage analytics via PostHog.
-# Collected: event name, pdavid version, platform, python version, active
-# flags (--training / --ollama etc.), and a random install ID that is
-# generated once and stored in .env. No secrets, no IPs, no model data.
-# Users are prompted on first run and can opt out at any time:
-#   pdavid configure --set TELEMETRY=false
 POSTHOG_API_KEY = "phc_CVVzzR93zv8wKdHwAeeotoScucAPdEcdwZaD99MAjm8B"
 POSTHOG_ENDPOINT = "https://us.i.posthog.com/capture/"
 
-# Files bootstrapped into the CWD on first run (skipped if already present).
 _BUNDLED_CONFIGS = [
     ("docker-compose.yml", "docker-compose.yml"),
     ("docker-compose.ollama.yml", "docker-compose.ollama.yml"),
@@ -159,9 +151,6 @@ _BUNDLED_CONFIGS = [
     ("docker/searxng/settings.yml", "docker/searxng/settings.yml"),
 ]
 
-# All files managed by the package that should be audited on upgrade.
-# Superset of _BUNDLED_CONFIGS — includes overlay compose files that are
-# not bootstrapped on first-run but are still shipped and should stay current.
 _AUDITED_FILES: list = [
     ("docker-compose.yml", "docker-compose.yml"),
     ("docker-compose.ollama.yml", "docker-compose.ollama.yml"),
@@ -213,8 +202,7 @@ def _resolve_compose_file(filename: str) -> str:
 _TYPER_HELP = (
     "Deployment orchestrator for the Project David / Entities platform.\n\n"
     "Install:    pip install projectdavid-platform\n\n"
-    "Base stack: pdavid --mode up\n"
-    "Update:     pdavid --mode up --pull\n\n"
+    "Base stack: pdavid --mode up\n\n"
     "Ollama inference (opt-in):\n"
     "  pdavid --mode up --ollama\n\n"
     "Sovereign Forge — training + Ray inference mesh (opt-in):\n"
@@ -423,7 +411,7 @@ class Orchestrator:
             self.log.setLevel(logging.DEBUG)
 
         self._ensure_config_files()
-        self._audit_compose_files()
+        # Note: _audit_compose_files is called only from _handle_up, not here.
 
         self.base_compose = _resolve_compose_file(BASE_COMPOSE_FILE)
         self.ollama_compose = _resolve_compose_file(OLLAMA_COMPOSE_FILE)
@@ -471,8 +459,8 @@ class Orchestrator:
         typer.echo(
             "\n  New features and fixes are available.\n"
             f"  What's new: {CHANGELOG_URL}\n\n"
-            "  To apply the update and pull the latest container images:\n\n"
-            "    pdavid --mode up --pull\n\n"
+            "  To apply the update:\n\n"
+            "    pdavid --mode up\n\n"
             "  Your data and secrets are not affected.\n"
         )
         typer.echo("=" * 60 + "\n")
@@ -493,11 +481,6 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def _prompt_telemetry(self, env_values: dict) -> None:
-        """
-        Ask once on first-run whether the user wants to share anonymous
-        usage stats. Stores TELEMETRY and PDAVID_INSTALL_ID in env_values.
-        Skips the prompt in non-interactive environments (defaults to True).
-        """
         if not sys.stdin.isatty():
             env_values["TELEMETRY"] = "true"
             env_values["PDAVID_INSTALL_ID"] = f"inst_{secrets.token_hex(16)}"
@@ -541,19 +524,10 @@ class Orchestrator:
         typer.echo("=" * 60 + "\n")
 
     def _migrate_env_telemetry(self) -> None:
-        """
-        Backfill TELEMETRY and PDAVID_INSTALL_ID into an existing .env that
-        predates the telemetry feature (1.38.0).
-
-        Called after load_dotenv so os.environ is already populated.
-        Only fires when PDAVID_INSTALL_ID is absent — i.e. exactly once
-        per existing install, then never again.
-        """
         env_path = Path(self._ENV_FILE)
         if not env_path.exists():
             return
 
-        # Already migrated — nothing to do.
         if os.environ.get("PDAVID_INSTALL_ID", "").strip():
             return
 
@@ -604,12 +578,6 @@ class Orchestrator:
         self.log.info("Telemetry fields written to .env.")
 
     def _detect_ci(self) -> Optional[str]:
-        """
-        Return the name of the CI platform if we're running inside a known
-        CI environment, or None if this looks like a real user machine.
-
-        Detection is purely env-var based — no network calls, no side effects.
-        """
         checks = [
             ("GITHUB_ACTIONS", "github_actions"),
             ("GITLAB_CI", "gitlab_ci"),
@@ -631,17 +599,12 @@ class Orchestrator:
         return None
 
     def _send_telemetry(self, event: str, properties: dict) -> None:
-        """
-        Fire-and-forget telemetry event to PostHog.
-        Runs in a daemon thread — never blocks the CLI.
-        Silently swallows all exceptions.
-        """
         if os.environ.get("TELEMETRY", "true").lower() != "true":
             return
 
         install_id = os.environ.get("PDAVID_INSTALL_ID", "unknown")
         if not install_id or install_id == "unknown":
-            return  # .env not yet generated — skip silently
+            return
 
         try:
             version = importlib.metadata.version("projectdavid-platform")
@@ -664,7 +627,7 @@ class Orchestrator:
                     if getattr(self.args, f, False)
                 ],
                 "ci": ci_platform is not None,
-                "ci_platform": ci_platform,  # None → real user, string → CI system
+                "ci_platform": ci_platform,
                 **properties,
             },
         }
@@ -744,17 +707,15 @@ class Orchestrator:
             )
 
     # ------------------------------------------------------------------
-    # Compose-file audit
+    # Compose-file audit — called only from _handle_up
     # ------------------------------------------------------------------
 
     def _file_sha256(self, path: Path) -> str:
-        """Return the first 12 hex chars of the SHA-256 digest of a file."""
         h = hashlib.sha256()
         h.update(path.read_bytes())
         return h.hexdigest()[:12]
 
     def _bundled_sha256(self, pkg_rel: str) -> Optional[str]:
-        """Return the first 12 hex chars of the SHA-256 of the bundled file, or None."""
         try:
             pkg_files = importlib.resources.files(PACKAGE_NAME)
             resource = pkg_files
@@ -766,19 +727,7 @@ class Orchestrator:
             return None
 
     def _audit_compose_files(self, *, interactive: bool = True) -> List[Path]:
-        """
-        Compare every locally-present managed file against its bundled counterpart.
-
-        Collects stale files (local hash != bundled hash), prints a summary table,
-        and — when *interactive* is True — offers a single Y/N prompt to replace
-        them all, backing up originals to .pdavid_backup/<timestamp>_from_<ver>/
-        before any file is touched.
-
-        Returns the list of stale local Paths so callers can act on them.
-        When *interactive* is False the report is printed but no prompt is shown
-        (suitable for CI --check mode).
-        """
-        stale: List[tuple] = []  # (pkg_rel, cwd_rel, local_path, bundled_hash)
+        stale: List[tuple] = []
 
         for pkg_rel, cwd_rel in _AUDITED_FILES:
             local = Path.cwd() / cwd_rel
@@ -1322,7 +1271,7 @@ class Orchestrator:
         else:
             self.log.info("'%s' exists — loading.", self._ENV_FILE)
             load_dotenv(dotenv_path=self._ENV_FILE, override=True)
-            self._migrate_env_telemetry()  # backfill telemetry fields if missing
+            self._migrate_env_telemetry()
 
     def _configure_shared_path(self):
         system = _platform.system().lower()
@@ -1577,15 +1526,18 @@ class Orchestrator:
         self._validate_secrets()
         self._check_version_upgrade()
 
+        # Audit compose files only on up — not on down
+        self._audit_compose_files()
+
         up_cmd = ["docker", "compose"] + self._compose_files() + ["up"]
+
         if not getattr(self.args, "attached", False):
             up_cmd.append("-d")
-        if getattr(self.args, "build_before_up", False):
-            up_cmd.append("--build")
         if getattr(self.args, "force_recreate", False):
             up_cmd.append("--force-recreate")
-        if getattr(self.args, "pull", False):
-            up_cmd.extend(["--pull", "always"])
+
+        # Always pull from registry — never build locally
+        up_cmd.extend(["--pull", "always"])
 
         exclude = set(getattr(self.args, "exclude", None) or [])
         target = list(getattr(self.args, "services", None) or [])
@@ -1634,20 +1586,6 @@ class Orchestrator:
             down_cmd.extend(target_services)
         self._run_command(down_cmd, check=False)
         self._send_telemetry("pdavid_down", {})
-
-    def _handle_build(self):
-        target_services = getattr(self.args, "services", None) or []
-        build_cmd = ["docker", "compose"] + self._compose_files() + ["build"]
-        if getattr(self.args, "no_cache", False):
-            build_cmd.append("--no-cache")
-        if getattr(self.args, "parallel", False):
-            build_cmd.append("--parallel")
-        if target_services:
-            build_cmd.extend(target_services)
-        try:
-            self._run_command(build_cmd, check=True)
-        except subprocess.CalledProcessError:
-            raise SystemExit(1)
 
     def _handle_logs(self):
         target_services = getattr(self.args, "services", None) or []
@@ -1794,13 +1732,7 @@ class Orchestrator:
             if mode == "down_only":
                 return
 
-        if mode == "build":
-            self._handle_build()
-            return
-
-        if mode in ("up", "both"):
-            if mode == "both":
-                self._handle_build()
+        if mode == "up":
             self._handle_up()
 
 
@@ -1992,7 +1924,7 @@ def main(
     mode: str = typer.Option(
         "up",
         "--mode",
-        help="Stack action: up | build | both | down_only | logs",
+        help="Stack action: up | down_only | logs",
         show_default=True,
     ),
     training: bool = typer.Option(
@@ -2027,18 +1959,8 @@ def main(
     force_recreate: bool = typer.Option(
         False, "--force-recreate", help="Force-recreate containers."
     ),
-    pull: bool = typer.Option(
-        False, "--pull", help="Pull the latest container images before starting."
-    ),
     attached: bool = typer.Option(
         False, "--attached", "-a", help="Run up in foreground."
-    ),
-    build_before_up: bool = typer.Option(
-        False, "--build-before-up", help="Build before up."
-    ),
-    no_cache: bool = typer.Option(False, "--no-cache", help="Build without cache."),
-    parallel: bool = typer.Option(
-        False, "--parallel", help="Build images in parallel."
     ),
     nuke: bool = typer.Option(
         False, "--nuke", help="DANGER: destroy all stack data. Requires confirmation."
@@ -2058,7 +1980,6 @@ def main(
 
     BASE STACK:\n
       pdavid --mode up\n
-      pdavid --mode up --pull\n
       pdavid --mode up --exclude samba\n
       pdavid --mode logs --follow\n
       pdavid --mode down_only\n
@@ -2083,7 +2004,7 @@ def main(
     if ctx.invoked_subcommand is not None:
         return
 
-    valid_modes = {"up", "build", "both", "down_only", "logs"}
+    valid_modes = {"up", "down_only", "logs"}
     if mode not in valid_modes:
         typer.echo(
             f"[error] Invalid --mode '{mode}'. Choose from: {', '.join(sorted(valid_modes))}",
@@ -2091,16 +2012,9 @@ def main(
         )
         raise SystemExit(1)
 
-    if exclude and mode not in ("up", "both"):
+    if exclude and mode != "up":
         typer.echo(
-            f"[error] --exclude is only valid with --mode=up or --mode=both (got '{mode}').",
-            err=True,
-        )
-        raise SystemExit(1)
-
-    if pull and mode not in ("up", "both"):
-        typer.echo(
-            f"[error] --pull is only valid with --mode=up or --mode=both (got '{mode}').",
+            f"[error] --exclude is only valid with --mode=up (got '{mode}').",
             err=True,
         )
         raise SystemExit(1)
@@ -2119,11 +2033,7 @@ def main(
         down=down,
         clear_volumes=clear_volumes,
         force_recreate=force_recreate,
-        pull=pull,
         attached=attached,
-        build_before_up=build_before_up,
-        no_cache=no_cache,
-        parallel=parallel,
         nuke=nuke,
         follow=follow,
         tail=tail,
