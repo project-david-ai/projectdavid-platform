@@ -139,7 +139,7 @@ services:
       - my_custom_network
 
   api:
-    image: thanosprime/projectdavid-core-api:1.38.0
+    image: thanosprime/projectdavid-core-api:1.39.0
     container_name: fastapi_cosmic_catalyst
     restart: always
     env_file:
@@ -187,7 +187,7 @@ services:
       - my_custom_network
 
   sandbox:
-    image: thanosprime/projectdavid-core-sandbox:1.38.0
+    image: thanosprime/projectdavid-core-sandbox:1.39.0
     container_name: sandbox_api
     restart: always
     cap_add:
@@ -233,7 +233,7 @@ services:
   # Digest will be pinned in PINNED_IMAGES.md after first production build.
   # ---------------------------------------------------------------------------
   router:
-    image: thanosprime/projectdavid-core-router:1.38.0
+    image: thanosprime/projectdavid-core-router:1.39.0
     container_name: pd_router
     restart: always
     environment:
@@ -277,7 +277,7 @@ services:
     # Worker machines join this node via Tailscale overlay — no SSH tunnel needed.
     # Tailscale state persisted in tailscale_state volume — IP stable across
     # container recreates, no re-auth required after first run.
-    image: thanosprime/projectdavid-core-inference-worker:1.38.0
+    image: thanosprime/projectdavid-core-inference-worker:1.39.0
     container_name: inference_worker
     restart: unless-stopped
     profiles: ["training"]
@@ -338,7 +338,7 @@ services:
     # Fine-tuning job runner. Redis queue consumer.
     # No Ray ownership. No GPU authority. Depends on inference-worker for
     # Ray Serve deployment of fine-tuned models post-training.
-    image: thanosprime/projectdavid-core-training-worker:1.38.0
+    image: thanosprime/projectdavid-core-training-worker:1.39.0
     container_name: training_worker
     restart: unless-stopped
     profiles: ["training"]
@@ -380,7 +380,7 @@ services:
   training-api:
     # REST API for datasets, training jobs, and model registry.
     # No GPU required. Queries Ray via dashboard HTTP API only.
-    image: thanosprime/projectdavid-core-training-api:1.38.0
+    image: thanosprime/projectdavid-core-training-api:1.39.0
     container_name: training_api
     restart: unless-stopped
     profiles: ["training"]
