@@ -1,60 +1,18 @@
-# docker-compose.yml (projectdavid-platform)
-#
-# Base stack + Sovereign Forge opt-in via Docker Compose profiles.
-#
-# USAGE:
-#   pdavid --mode up                    # Base stack only
-#   pdavid --mode up --ollama           # + Ollama (overlay)
-#   pdavid --mode up --training         # + Sovereign Forge (profile: training)
-#
-# SOVEREIGN FORGE ARCHITECTURE
-# ─────────────────────────────
-#   inference-worker  Ray HEAD + Ray Serve. Owns the GPU on this machine.
-#                     VLLM_BASE_URL on the api points here (:8002→:8000).
-#   training-worker   Fine-tuning job runner (Redis queue, no Ray ownership).
-#   training-api      Dataset/job/registry REST API (:9001).
-#
-# SCALE-OUT: pdavid worker --join <head-ip>   (on machines 2, 3, N)
-#
-# IMAGE PINNING
-# ─────────────
-# All third-party images are pinned by SHA256 digest for immutability.
-# Tags are human-readable hints only — Docker enforces the digest.
-# See PINNED_IMAGES.md for the full registry, upgrade policy, and backlog.
-# Pinned: 2026-04-04 | Stack: base + training | GPU: RTX 4060 CUDA 12.8
-#
-# NODE_IP / TAILSCALE (opt-in)
-# ─────────────────────────────
-# Set NODE_IP in .env to this machine's Tailscale IP to enable
-# Tailscale-based cluster networking with remote worker nodes.
-# Leave unset for local-only or airgapped deployments.
-#
-# TAILSCALE IP PERSISTENCE
-# ─────────────────────────
-# tailscale_state volume persists Tailscale identity across container
-# recreates — same 100.x.x.x IP every time, no re-auth required.
-#
-# SSH TUNNEL
-# ──────────
-# pdavid tunnel has been removed. Cluster networking is now handled
-# exclusively via Tailscale overlay. See docs/sovereign-cluster.md.
-
 services:
 
   db:
-    image: mysql:8.0@sha256:64756cc92f707eb504496d774353990bcb0f6999ddf598b6ad188f2da66bd000
+    image: mysql:8.0
     container_name: my_mysql_cosmic_catalyst
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-default}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: entities_db
       MYSQL_USER: api_user
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-default}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     volumes:
       - mysql_data:/var/lib/mysql
     ports:
       - "3307:3306"
-      - "3308:3306"
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
@@ -64,10 +22,12 @@ services:
       - my_custom_network
 
   qdrant:
-    # v1.17.0 — upgrade tag to qdrant/qdrant:v1.17.0 on next bump
-    image: qdrant/qdrant@sha256:94728574965d17c6485dd361aa3c0818b325b9016dac5ea6afec7b4b2700865f
+    image: qdrant/qdrant:latest
     container_name: qdrant_server
     restart: always
+    ports:
+      - "6333:6333"
+      - "6334:6334"
     volumes:
       - qdrant_storage:/qdrant/storage
     environment:
@@ -78,22 +38,22 @@ services:
       - my_custom_network
 
   redis:
-    # 7.4 — upgrade tag to redis:7.4 on next bump
-    image: redis:7@sha256:a5995dfdf108997f8a7c9587f54fad5e94ed5848de5236a6b28119e99efd67e0
+    image: redis:7
     container_name: redis
     restart: unless-stopped
     ports:
-      - "6379:6379"    # expose to host — Tailscale-only access
+      - "6379:6379"
     volumes:
       - redis_data:/data
     networks:
       - my_custom_network
 
   browser:
-    # No semver tags published upstream — digest-only pin
-    image: ghcr.io/browserless/chromium@sha256:57a1edb1f76e56cf1f128a2c379381df9d937e643c2cf562d76463b0280c24c4
+    image: ghcr.io/browserless/chromium:latest
     container_name: browserless_chromium
     restart: always
+    ports:
+      - "3000:3000"
     environment:
       - MAX_CONCURRENT_SESSIONS=10
       - CONNECTION_TIMEOUT=60000
@@ -101,45 +61,183 @@ services:
       - my_custom_network
 
   searxng:
-    # 2026.4.3-c980fa1ef — upgrade tag to searxng/searxng:2026.4.3-c980fa1ef on next bump
-    image: searxng/searxng@sha256:a89ed4a9dc2cbafeee79fc5fd75067e201543ed453fb43eae576d3e09c61780b
+    image: searxng/searxng:latest
     container_name: searxng
     restart: unless-stopped
+    ports:
+      - "8080:8080"
     volumes:
       - ./docker/searxng:/etc/searxng
     environment:
-      - SEARXNG_BASE_URL=http://searxng:8080/
-      - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-changeme_use_a_real_secret}
+      - SEARXNG_BASE_URL=http://localhost:8080/
+      - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY}
     depends_on:
       - redis
     networks:
       - my_custom_network
 
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger_ui
+    restart: always
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "14250:14250"
+    networks:
+      - my_custom_network
+
   otel-collector:
-    # v0.149.0 — upgrade tag to otel/opentelemetry-collector-contrib:0.149.0 on next bump
-    image: otel/opentelemetry-collector-contrib@sha256:0fba96233274f6d665ac8831ad99dfe6479a9a20459f6e2719c0d20945773b46
+    image: otel/opentelemetry-collector-contrib:latest
     container_name: otel_collector
     restart: always
     command: ["--config=/etc/otel-config.yaml"]
     volumes:
       - ./docker/otel/otel-config.yaml:/etc/otel-config.yaml
+    ports:
+      - "4317:4317"
+      - "4318:4318"
     depends_on:
       - jaeger
     networks:
       - my_custom_network
 
-  jaeger:
-    # 1.76.0 — upgrade tag to jaegertracing/all-in-one:1.76.0 on next bump
-    image: jaegertracing/all-in-one@sha256:ab6f1a1f0fb49ea08bcd19f6b84f6081d0d44b364b6de148e1798eb5816bacac
-    container_name: jaeger_ui
-    restart: always
-    environment:
-      - COLLECTOR_OTLP_ENABLED=true
+  # ---------------------------------------------------------------------------
+  # ollama — Local Ollama inference (ai profile only)
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    profiles: ["ai"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
     networks:
       - my_custom_network
 
+  training-api:
+    # REST API for datasets, training jobs, and model registry.
+    # No GPU required. Queries Ray via dashboard HTTP API only.
+    # Reachable via nginx: /v1/datasets/ /v1/training-jobs/
+    # /v1/fine-tuned-models/ /v1/deployments/ /v1/inference-deployments/
+    # /v1/registry/ — no host port mapping needed.
+    #
+    # HF cache mounted read-only — required for the training-job whitelist
+    # check (_is_model_in_hf_cache in training_service.py) which verifies
+    # the base model exists in the shared cache before dispatching to the
+    # training worker. training-api only reads, never writes.
+    image: thanosprime/projectdavid-core-training-api:1.39
+    container_name: training_api
+    restart: unless-stopped
+    profiles: ["training"]
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - SECRET_KEY=${SECRET_KEY}
+      - DEFAULT_SECRET_KEY=${DEFAULT_SECRET_KEY}
+      - REDIS_URL=redis://redis:6379/0
+      - ASSISTANTS_BASE_URL=http://api:80
+      - WORKER_API_KEY=${ADMIN_API_KEY}
+      - SANDBOX_AUTH_SECRET=${SANDBOX_AUTH_SECRET}
+      - SHARED_PATH=/mnt/training_data
+      - HF_HOME=/root/.cache/huggingface
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ${SHARED_PATH:-./shared_data}:/mnt/training_data
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface:ro
+    depends_on:
+      - redis
+      - training-worker
+    networks:
+      - my_custom_network
+
+  # ---------------------------------------------------------------------------
+  # training-worker — Fine-tuning job runner
+  # Redis queue consumer. No Ray ownership. Depends on inference-worker for
+  # Ray Serve deployment of fine-tuned models post-training.
+  # Opt-in: docker compose --profile training up
+  # ---------------------------------------------------------------------------
+  training-worker:
+    image: thanosprime/projectdavid-core-training-worker:1.39
+    container_name: training_worker
+    restart: unless-stopped
+    profiles: ["training"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - SHARED_PATH=/mnt/training_data
+      - HF_HOME=/root/.cache/huggingface
+      - HF_CACHE_PATH=/root/.cache/huggingface
+      - DATABASE_URL=${DATABASE_URL}
+      - NODE_ID=${NODE_ID:-}
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - ${SHARED_PATH:-./shared_data}:/mnt/training_data
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+    networks:
+      - my_custom_network
+    depends_on:
+      - redis
+    command: ["python", "src/api/training/worker.py"]
+
+  # ---------------------------------------------------------------------------
+  # inference-worker — Ray HEAD node
+  # Owns the GPU, runs Ray Serve, hosts the InferenceReconciler.
+  # All vLLM inference is managed here via Ray Serve deployments.
+  # VLLM_BASE_URL on the main api points to this container.
+  # Opt-in: docker compose --profile training up
+  # ---------------------------------------------------------------------------
+  inference-worker:
+    image: thanosprime/projectdavid-core-inference-worker:1.39
+    container_name: inference_worker
+    restart: unless-stopped
+    profiles: ["training"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - RAY_DASHBOARD_PORT=${RAY_DASHBOARD_PORT:-8265}
+      - RAY_CLIENT_SERVER_PORT=10001
+      - SERVE_HTTP_PORT=8000
+      - SHARED_PATH=/mnt/training_data
+      - HF_HOME=/root/.cache/huggingface
+      - HF_CACHE_PATH=/root/.cache/huggingface
+      - DATABASE_URL=${DATABASE_URL}
+      - NODE_ID=${NODE_ID:-}
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - RAY_IGNORE_VERSION_MISMATCH=1
+    ports:
+      - "8002:8000"
+      - "8265:8265"
+      - "10001:10001"
+    volumes:
+      - ${SHARED_PATH:-./shared_data}:/mnt/training_data
+      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
+    networks:
+      - my_custom_network
+    depends_on:
+      - redis
+
   api:
-    image: thanosprime/projectdavid-core-api:1.39.0
+    image: thanosprime/projectdavid-core-api:1.39
     container_name: fastapi_cosmic_catalyst
     restart: always
     env_file:
@@ -158,16 +256,15 @@ services:
       - OTEL_TRACES_EXPORTER=otlp
       - OTEL_METRICS_EXPORTER=none
       - OTEL_LOGS_EXPORTER=none
-      # Ollama stub — overridden by docker-compose.ollama.yml when --ollama is used.
-      - OLLAMA_BASE_URL=http://localhost:11434/v1
-      # Ray Serve inference endpoint (inference-worker container).
-      # Active when --training is used; stub otherwise.
+      - OLLAMA_BASE_URL=http://ollama:11434/v1
       - VLLM_BASE_URL=http://inference_worker:8000
       - SHARED_PATH=/app/shared_data
-      - ASSISTANTS_BASE_URL=http://localhost:80
-      - DOWNLOAD_BASE_URL=http://localhost:80/v1/files/download
+      - ASSISTANTS_BASE_URL=http://api:9000
+      - DOWNLOAD_BASE_URL=http://api:9000/v1/files/download
+    ports:
+      - "9000:9000"
     volumes:
-      - ${SHARED_PATH:-./shared_data}:/app/shared_data
+      - ${SHARED_PATH}:/app/shared_data
     depends_on:
       db:
         condition: service_healthy
@@ -187,7 +284,7 @@ services:
       - my_custom_network
 
   sandbox:
-    image: thanosprime/projectdavid-core-sandbox:1.39.0
+    image: thanosprime/projectdavid-core-sandbox:1.39
     container_name: sandbox_api
     restart: always
     cap_add:
@@ -196,6 +293,8 @@ services:
       - seccomp:unconfined
     devices:
       - /dev/fuse
+    ports:
+      - "8000:8000"
     volumes:
       - /tmp/sandbox_logs:/app/logs
     depends_on:
@@ -207,53 +306,43 @@ services:
       - my_custom_network
 
   samba:
-    # WARNING: dperson/samba upstream is inactive. Evaluate replacement.
-    image: dperson/samba@sha256:66088b78a19810dd1457a8f39340e95e663c728083efa5fe7dc0d40b2478e869
+    image: dperson/samba
     container_name: samba_server
     restart: unless-stopped
     environment:
-      USERID: ${SAMBA_USERID:-1000}
-      GROUPID: ${SAMBA_GROUPID:-1000}
-      TZ: UTC
-      USER: "samba_user;${SMBCLIENT_PASSWORD:-default}"
-      SHARE: "cosmic_share;/samba/share;yes;no;no;samba_user"
-      GLOBAL: |
-        server min protocol = NT1
-        server max protocol = SMB3
+      - USERID=1000
+      - GROUPID=1000
+      - TZ=UTC
+      - USER=samba_user;${SMBCLIENT_PASSWORD}
+      - SHARE=cosmic_share;/samba/share;yes;no;no;samba_user
+      - "GLOBAL=server min protocol = NT1"
+    ports:
+      - "1139:139"
+      - "1445:445"
     volumes:
-      - ${SHARED_PATH:-./shared_data}:/samba/share
+      - ${SHARED_PATH}:/samba/share
     networks:
       - my_custom_network
 
-  # ---------------------------------------------------------------------------
-  # router — Rust request router (pd_router)
-  # Sits between nginx and FastAPI. Owns the connection pool for the
-  # /v1/completions SSE streaming hot path. Handles concurrent inference
-  # requests without Python GIL contention.
-  # Digest will be pinned in PINNED_IMAGES.md after first production build.
-  # ---------------------------------------------------------------------------
   router:
-    image: thanosprime/projectdavid-core-router:1.39.0
+    # Rust request router (pd_router)
+    # Sits between nginx and FastAPI. Owns the connection pool for the
+    # /v1/completions SSE streaming hot path. Handles concurrent inference
+    # requests without Python GIL contention.
+    image: thanosprime/projectdavid-core-router:1.39
     container_name: pd_router
     restart: always
     environment:
       - UPSTREAM_URL=http://api:9000
       - LISTEN_PORT=9100
       - LOG_LEVEL=pd_router=info
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9100/_router/health"]
-      interval: 10s
-      timeout: 3s
-      start_period: 5s
-      retries: 3
     depends_on:
       - api
     networks:
       - my_custom_network
 
   nginx:
-    # stable-alpine3.23
-    image: nginx:alpine@sha256:e7257f1ef28ba17cf7c248cb8ccf6f0c6e0228ab9c315c152f9c203cd34cf6d1
+    image: nginx:alpine
     container_name: nginx_proxy
     restart: always
     ports:
@@ -266,151 +355,11 @@ services:
     networks:
       - my_custom_network
 
-  # ---------------------------------------------------------------------------
-  # Sovereign Forge — profile: training
-  # Activated by: pdavid --mode up --training
-  # ---------------------------------------------------------------------------
-
-  inference-worker:
-    # Ray HEAD node + Ray Serve inference mesh.
-    # Owns the GPU. VLLM_BASE_URL on the api points to this container.
-    # Worker machines join this node via Tailscale overlay — no SSH tunnel needed.
-    # Tailscale state persisted in tailscale_state volume — IP stable across
-    # container recreates, no re-auth required after first run.
-    image: thanosprime/projectdavid-core-inference-worker:1.39.0
-    container_name: inference_worker
-    restart: unless-stopped
-    profiles: ["training"]
-    runtime: nvidia
-    shm_size: '5gb'
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    devices:
-      - /dev/net/tun
-    environment:
-      - NODE_ID=${NODE_ID:-}
-      - RAY_ADDRESS=${RAY_ADDRESS:-}
-      - RAY_DASHBOARD_PORT=${RAY_DASHBOARD_PORT:-8265}
-      - RAY_CLIENT_SERVER_PORT=${RAY_CLIENT_SERVER_PORT:-10001}
-      - SERVE_HTTP_PORT=8000
-      - DATABASE_URL=${DATABASE_URL}
-      - REDIS_URL=redis://redis:6379/0
-      - SHARED_PATH=/mnt/training_data
-      - HF_TOKEN=${HF_TOKEN:-}
-      - HF_HOME=/root/.cache/huggingface
-      - HF_HUB_OFFLINE=0
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - PYTHONUNBUFFERED=1
-      - RAY_IGNORE_VERSION_MISMATCH=1
-      # Tailscale cluster networking (opt-in).
-      # Set NODE_IP in .env to this machine's Tailscale IP to advertise
-      # it to the Ray cluster for bidirectional worker node communication.
-      # Leave unset for local-only or airgapped deployments.
-      - NODE_IP=${NODE_IP:-}
-      # Tailscale auth key (opt-in).
-      # Set TAILSCALE_AUTH_KEY in .env to enable Tailscale on this container.
-      # Leave unset for local-only or airgapped deployments.
-      - TAILSCALE_AUTH_KEY=${TAILSCALE_AUTH_KEY:-}
-    ports:
-      - "8002:8000"    # Ray Serve HTTP (VLLM_BASE_URL resolves here)
-      - "8265:8265"    # Ray dashboard — http://localhost:8265
-      - "10001:10001"  # Ray client server (worker nodes join via this)
-      - "6379:6379"    # Ray GCS (worker nodes join via this)
-    volumes:
-      - tailscale_state:/var/lib/tailscale
-      - ${SHARED_PATH:-./shared_data}:/mnt/training_data
-      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
-    depends_on:
-      - redis
-    networks:
-      - my_custom_network
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-
-  training-worker:
-    # Fine-tuning job runner. Redis queue consumer.
-    # No Ray ownership. No GPU authority. Depends on inference-worker for
-    # Ray Serve deployment of fine-tuned models post-training.
-    image: thanosprime/projectdavid-core-training-worker:1.39.0
-    container_name: training_worker
-    restart: unless-stopped
-    profiles: ["training"]
-    command: ["python", "/app/src/api/training/worker.py"]
-    env_file:
-      - .env
-    runtime: nvidia
-    shm_size: '5gb'
-    environment:
-      - NODE_ID=${NODE_ID:-}
-      - DATABASE_URL=${DATABASE_URL}
-      - REDIS_URL=redis://redis:6379/0
-      - ASSISTANTS_BASE_URL=http://api:80
-      - WORKER_API_KEY=${ADMIN_API_KEY}
-      - SHARED_PATH=/mnt/training_data
-      - HF_TOKEN=${HF_TOKEN:-}
-      - HF_HOME=/root/.cache/huggingface
-      - HF_HUB_OFFLINE=0
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ${SHARED_PATH:-./shared_data}:/mnt/training_data
-      - ${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface
-    depends_on:
-      - redis
-      - inference-worker
-    networks:
-      - my_custom_network
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-
-  training-api:
-    # REST API for datasets, training jobs, and model registry.
-    # No GPU required. Queries Ray via dashboard HTTP API only.
-    image: thanosprime/projectdavid-core-training-api:1.39.0
-    container_name: training_api
-    restart: unless-stopped
-    profiles: ["training"]
-    env_file:
-      - .env
-    environment:
-      - DATABASE_URL=${DATABASE_URL}
-      - SECRET_KEY=${SECRET_KEY}
-      - DEFAULT_SECRET_KEY=${DEFAULT_SECRET_KEY}
-      - REDIS_URL=redis://redis:6379/0
-      - ASSISTANTS_BASE_URL=http://api:80
-      - WORKER_API_KEY=${ADMIN_API_KEY}
-      - SANDBOX_AUTH_SECRET=${SANDBOX_AUTH_SECRET}
-      - SHARED_PATH=/mnt/training_data
-      - PYTHONUNBUFFERED=1
-    ports:
-      - "9001:9001"
-    volumes:
-      - ${SHARED_PATH:-./shared_data}:/mnt/training_data
-    depends_on:
-      - redis
-      - training-worker
-    networks:
-      - my_custom_network
-
 volumes:
   mysql_data:
   qdrant_storage:
   redis_data:
-  tailscale_state:
+  ollama_data:
 
 networks:
   my_custom_network:
