@@ -1,3 +1,10 @@
+# [1.41.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.40.0...v1.41.0) (2026-04-19)
+
+
+### Features
+
+* **deps:** pin core images to :1.39 and wire HF cache for training-api ([ed9e1f2](https://github.com/project-david-ai/projectdavid-platform/commit/ed9e1f24fdf8979f82c607cfb39292eb1cab3c89))
+
 # [1.40.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.39.0...v1.40.0) (2026-04-17)
 
 
