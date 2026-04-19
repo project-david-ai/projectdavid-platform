@@ -1,3 +1,10 @@
+# [1.42.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.41.0...v1.42.0) (2026-04-19)
+
+
+### Features
+
+* trigger release build ([17620d7](https://github.com/project-david-ai/projectdavid-platform/commit/17620d7bad833c32563ea3136c8c7f477b87f8c1))
+
 # [1.41.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.40.0...v1.41.0) (2026-04-19)
 
 
