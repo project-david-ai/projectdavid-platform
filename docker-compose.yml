@@ -129,7 +129,7 @@ services:
     # check (_is_model_in_hf_cache in training_service.py) which verifies
     # the base model exists in the shared cache before dispatching to the
     # training worker. training-api only reads, never writes.
-    image: thanosprime/projectdavid-core-training-api:1.41
+    image: thanosprime/projectdavid-core-training-api:1.42
     container_name: training_api
     restart: unless-stopped
     profiles: ["training"]
@@ -162,7 +162,7 @@ services:
   # Opt-in: docker compose --profile training up
   # ---------------------------------------------------------------------------
   training-worker:
-    image: thanosprime/projectdavid-core-training-worker:1.41
+    image: thanosprime/projectdavid-core-training-worker:1.42
     container_name: training_worker
     restart: unless-stopped
     profiles: ["training"]
@@ -200,7 +200,7 @@ services:
   # Opt-in: docker compose --profile training up
   # ---------------------------------------------------------------------------
   inference-worker:
-    image: thanosprime/projectdavid-core-inference-worker:1.41
+    image: thanosprime/projectdavid-core-inference-worker:1.42
     container_name: inference_worker
     restart: unless-stopped
     profiles: ["training"]
@@ -237,7 +237,7 @@ services:
       - redis
 
   api:
-    image: thanosprime/projectdavid-core-api:1.41
+    image: thanosprime/projectdavid-core-api:1.42
     container_name: fastapi_cosmic_catalyst
     restart: always
     env_file:
@@ -284,7 +284,7 @@ services:
       - my_custom_network
 
   sandbox:
-    image: thanosprime/projectdavid-core-sandbox:1.41
+    image: thanosprime/projectdavid-core-sandbox:1.42
     container_name: sandbox_api
     restart: always
     cap_add:
@@ -329,7 +329,7 @@ services:
     # Sits between nginx and FastAPI. Owns the connection pool for the
     # /v1/completions SSE streaming hot path. Handles concurrent inference
     # requests without Python GIL contention.
-    image: thanosprime/projectdavid-core-router:1.41
+    image: thanosprime/projectdavid-core-router:1.42
     container_name: pd_router
     restart: always
     environment:
