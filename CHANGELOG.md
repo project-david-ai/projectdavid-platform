@@ -1,3 +1,10 @@
+## [1.44.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.44.0...v1.44.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* finalise vLLM platform integration and Ray CLI management ([eaa6ce7](https://github.com/project-david-ai/projectdavid-platform/commit/eaa6ce7558c621dfa36f2b694e22a18619def7e3))
+
 # [1.44.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.43.1...v1.44.0) (2026-08-22)
 
 
