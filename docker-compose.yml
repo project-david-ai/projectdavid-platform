@@ -385,9 +385,9 @@ services:
     image: thanosprime/projectdavid-core-training-api:1.43.0
     container_name: training_api
     restart: unless-stopped
-    profiles: ["training"]
+    profiles: ["vllm", "training"]
     env_file:
-      - .enva
+      - .env
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - SECRET_KEY=${SECRET_KEY}
@@ -404,7 +404,6 @@ services:
       - ${SHARED_PATH:-./shared_data}:/mnt/training_data
     depends_on:
       - redis
-      - training-worker
     networks:
       - my_custom_network
 
