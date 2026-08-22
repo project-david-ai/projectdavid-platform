@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.metadata
 import importlib.resources
 import json
@@ -13,10 +12,7 @@ import shutil
 import socket as _socket
 import subprocess  # nosec B404
 import sys
-import threading
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Optional
@@ -34,6 +30,7 @@ import typer
 #
 #   BASE STACK
 #   pdavid --mode up                        # Core platform only
+#   pdavid --mode up --pull                 # Pull latest images before starting
 #   pdavid --mode up --exclude samba        # Start without a specific service
 #   pdavid --mode up --services api db      # Start specific services only
 #   pdavid --mode logs --follow             # Tail logs
@@ -61,16 +58,14 @@ import typer
 #   pdavid ray --status                          # Cluster nodes + resource summary
 #   pdavid ray --deployments                     # List active Ray Serve deployments
 #   pdavid ray --gpu                             # nvidia-smi GPU memory usage
-#   pdavid ray --dashboard                       # Print Ray dashboard URL (http://localhost:80/ray/)
+#   pdavid ray --dashboard                       # Print Ray dashboard URL
 #   pdavid ray --kill vllm_dep_WwY4...           # Tear down a deployment by name
+#   pdavid ray --kill-all                        # Tear down ALL active deployments
 #   pdavid ray --status --node inference_worker_2  # Target a specific node
 #
-#   COMPOSE-FILE AUDIT
-#   pdavid audit                        # Interactive — prompts to replace stale files
-#   pdavid audit --check                # CI-safe — exits 1 if any files are stale
-#
-#   TELEMETRY (opt-in, prompted on first run)
-#   pdavid configure --set TELEMETRY=false   # Opt out at any time
+#   DATABASE MANAGEMENT
+#   pdavid db --status                           # Show active inference deployments
+#   pdavid db --nuke-deployments                 # Wipe inference_deployments table
 # ---------------------------------------------------------------------------
 
 
@@ -136,27 +131,11 @@ PACKAGE_NAME = "projectdavid_platform"
 CHANGELOG_URL = "https://github.com/project-david-ai/platform/blob/master/CHANGELOG.md"
 
 INFERENCE_WORKER_CONTAINER = "inference_worker"
-
-# ---------------------------------------------------------------------------
-# Telemetry
-# ---------------------------------------------------------------------------
-POSTHOG_API_KEY = "phc_CVVzzR93zv8wKdHwAeeotoScucAPdEcdwZaD99MAjm8B"
-POSTHOG_ENDPOINT = "https://us.i.posthog.com/capture/"
+DB_CONTAINER_NAME = "my_mysql_cosmic_catalyst"
 
 _BUNDLED_CONFIGS = [
     ("docker-compose.yml", "docker-compose.yml"),
     ("docker-compose.ollama.yml", "docker-compose.ollama.yml"),
-    ("docker/nginx/nginx.conf", "docker/nginx/nginx.conf"),
-    ("docker/otel/otel-config.yaml", "docker/otel/otel-config.yaml"),
-    ("docker/searxng/settings.yml", "docker/searxng/settings.yml"),
-]
-
-_AUDITED_FILES: list = [
-    ("docker-compose.yml", "docker-compose.yml"),
-    ("docker-compose.ollama.yml", "docker-compose.ollama.yml"),
-    ("docker-compose.vllm.yml", "docker-compose.vllm.yml"),
-    ("docker-compose.training.yml", "docker-compose.training.yml"),
-    ("docker-compose.gpu.yml", "docker-compose.gpu.yml"),
     ("docker/nginx/nginx.conf", "docker/nginx/nginx.conf"),
     ("docker/otel/otel-config.yaml", "docker/otel/otel-config.yaml"),
     ("docker/searxng/settings.yml", "docker/searxng/settings.yml"),
@@ -202,7 +181,8 @@ def _resolve_compose_file(filename: str) -> str:
 _TYPER_HELP = (
     "Deployment orchestrator for the Project David / Entities platform.\n\n"
     "Install:    pip install projectdavid-platform\n\n"
-    "Base stack: pdavid --mode up\n\n"
+    "Base stack: pdavid --mode up\n"
+    "Update:     pdavid --mode up --pull\n\n"
     "Ollama inference (opt-in):\n"
     "  pdavid --mode up --ollama\n\n"
     "Sovereign Forge — training + Ray inference mesh (opt-in):\n"
@@ -210,9 +190,7 @@ _TYPER_HELP = (
     "Scale-out — add a second GPU node to the cluster:\n"
     "  pdavid worker --join <head-node-ip>\n\n"
     "Config:     pdavid configure --set HF_TOKEN=hf_abc123\n"
-    "Admin:      pdavid bootstrap-admin\n"
-    "Audit:      pdavid audit\n"
-    "Telemetry:  pdavid configure --set TELEMETRY=false  # opt out"
+    "Admin:      pdavid bootstrap-admin"
 )
 
 app = typer.Typer(
@@ -298,7 +276,7 @@ class Orchestrator:
         "ASSISTANTS_BASE_URL": "http://localhost:80",
         "SANDBOX_SERVER_URL": "http://sandbox:8000",
         "DOWNLOAD_BASE_URL": "http://localhost:80/v1/files/download",
-        "HF_TOKEN": "",  # nosec B105 — empty default, user-supplied at runtime
+        "HF_TOKEN": "",  # nosec B105
         "HF_CACHE_PATH": "",
         "BASE_URL_HEALTH": "http://localhost:80/v1/health",
         "SHELL_SERVER_URL": "ws://sandbox:8000/ws/computer",
@@ -325,8 +303,6 @@ class Orchestrator:
         "TOGETHER_BASE_URL": "https://api.together.xyz/v1",
         "LOG_LEVEL": "INFO",
         "PYTHONUNBUFFERED": "1",
-        "TELEMETRY": "true",
-        "PDAVID_INSTALL_ID": "",  # generated on first run
     }
 
     _ENV_STRUCTURE = {
@@ -390,7 +366,6 @@ class Orchestrator:
             "TOOL_VECTOR_STORE_SEARCH",
         ],
         "Other": ["PDAVID_VERSION", "LOG_LEVEL", "PYTHONUNBUFFERED"],
-        "Telemetry": ["TELEMETRY", "PDAVID_INSTALL_ID"],
     }
 
     _SUMMARY_KEYS = [
@@ -401,7 +376,6 @@ class Orchestrator:
         "SHARED_PATH",
     ]
 
-    # ------------------------------------------------------------------
     def __init__(self, args: SimpleNamespace) -> None:
         self.args = args
         self.is_windows = _platform.system() == "Windows"
@@ -411,7 +385,6 @@ class Orchestrator:
             self.log.setLevel(logging.DEBUG)
 
         self._ensure_config_files()
-        # Note: _audit_compose_files is called only from _handle_up, not here.
 
         self.base_compose = _resolve_compose_file(BASE_COMPOSE_FILE)
         self.ollama_compose = _resolve_compose_file(OLLAMA_COMPOSE_FILE)
@@ -426,15 +399,10 @@ class Orchestrator:
             self._merge_env_for_training()
 
         self._ensure_dockerignore()
-        self._send_telemetry("pdavid_startup", {})
 
     @property
     def _env_file_abs(self) -> str:
         return str(Path(self._ENV_FILE).resolve())
-
-    # ------------------------------------------------------------------
-    # Version upgrade notice
-    # ------------------------------------------------------------------
 
     def _check_version_upgrade(self) -> None:
         try:
@@ -459,8 +427,8 @@ class Orchestrator:
         typer.echo(
             "\n  New features and fixes are available.\n"
             f"  What's new: {CHANGELOG_URL}\n\n"
-            "  To apply the update:\n\n"
-            "    pdavid --mode up\n\n"
+            "  To apply the update and pull the latest container images:\n\n"
+            "    pdavid --mode up --pull\n\n"
             "  Your data and secrets are not affected.\n"
         )
         typer.echo("=" * 60 + "\n")
@@ -475,182 +443,6 @@ class Orchestrator:
             os.environ["PDAVID_VERSION"] = version
         except Exception as e:
             self.log.debug("Could not update PDAVID_VERSION in .env: %s", e)
-
-    # ------------------------------------------------------------------
-    # Telemetry
-    # ------------------------------------------------------------------
-
-    def _prompt_telemetry(self, env_values: dict) -> None:
-        if not sys.stdin.isatty():
-            env_values["TELEMETRY"] = "true"
-            env_values["PDAVID_INSTALL_ID"] = f"inst_{secrets.token_hex(16)}"
-            return
-
-        typer.echo("\n" + "=" * 60)
-        typer.echo("  Anonymous usage analytics (opt-in)")
-        typer.echo("=" * 60)
-        typer.echo(
-            "\n"
-            "  Help improve projectdavid by sharing anonymous usage stats.\n"
-            "\n"
-            "  What is collected:\n"
-            "    - pdavid version and command name (e.g. pdavid_up)\n"
-            "    - Active flags (--training, --ollama, etc.)\n"
-            "    - OS platform and Python version\n"
-            "    - A random install ID (generated once, stored in .env)\n"
-            "\n"
-            "  What is NEVER collected:\n"
-            "    - Secrets, API keys, or tokens\n"
-            "    - IP addresses or hostnames\n"
-            "    - Model names or training data\n"
-            "    - Any file contents\n"
-            "\n"
-            "  Opt out any time:\n"
-            "    pdavid configure --set TELEMETRY=false\n"
-        )
-        enabled = typer.confirm("  Enable anonymous analytics?", default=True)
-        env_values["TELEMETRY"] = "true" if enabled else "false"
-        env_values["PDAVID_INSTALL_ID"] = f"inst_{secrets.token_hex(16)}"
-        os.environ["TELEMETRY"] = env_values["TELEMETRY"]
-        os.environ["PDAVID_INSTALL_ID"] = env_values["PDAVID_INSTALL_ID"]
-
-        if enabled:
-            typer.echo(
-                "\n  Thank you. You can opt out any time with:\n"
-                "    pdavid configure --set TELEMETRY=false\n"
-            )
-        else:
-            typer.echo("\n  No data will be collected.\n")
-        typer.echo("=" * 60 + "\n")
-
-    def _migrate_env_telemetry(self) -> None:
-        env_path = Path(self._ENV_FILE)
-        if not env_path.exists():
-            return
-
-        if os.environ.get("PDAVID_INSTALL_ID", "").strip():
-            return
-
-        self.log.info("Migrating .env — adding telemetry fields.")
-
-        install_id = f"inst_{secrets.token_hex(16)}"
-
-        if sys.stdin.isatty():
-            typer.echo("\n" + "=" * 60)
-            typer.echo("  One-time update — anonymous analytics (opt-in)")
-            typer.echo("=" * 60)
-            typer.echo(
-                "\n"
-                "  projectdavid 1.38 adds optional anonymous usage analytics.\n"
-                "\n"
-                "  What is collected:\n"
-                "    - pdavid version and command name\n"
-                "    - Active flags (--training, --ollama, etc.)\n"
-                "    - OS platform and Python version\n"
-                "    - A random install ID (stored in .env, never linked to you)\n"
-                "\n"
-                "  What is NEVER collected:\n"
-                "    - Secrets, API keys, tokens, IPs, hostnames, file contents\n"
-                "\n"
-                "  Opt out any time:\n"
-                "    pdavid configure --set TELEMETRY=false\n"
-            )
-            enabled = typer.confirm("  Enable anonymous analytics?", default=True)
-            typer.echo()
-        else:
-            enabled = True
-
-        telemetry_value = "true" if enabled else "false"
-
-        content = env_path.read_text(encoding="utf-8")
-        content += (
-            "\n#############################\n"
-            "# Telemetry\n"
-            "#############################\n"
-            f"TELEMETRY={telemetry_value}\n"
-            f"PDAVID_INSTALL_ID={install_id}\n"
-        )
-        env_path.write_text(content, encoding="utf-8")
-
-        os.environ["TELEMETRY"] = telemetry_value
-        os.environ["PDAVID_INSTALL_ID"] = install_id
-
-        self.log.info("Telemetry fields written to .env.")
-
-    def _detect_ci(self) -> Optional[str]:
-        checks = [
-            ("GITHUB_ACTIONS", "github_actions"),
-            ("GITLAB_CI", "gitlab_ci"),
-            ("CIRCLECI", "circleci"),
-            ("TRAVIS", "travis_ci"),
-            ("JENKINS_URL", "jenkins"),
-            ("BITBUCKET_BUILD_NUMBER", "bitbucket_pipelines"),
-            ("DRONE", "drone_ci"),
-            ("BUILDKITE", "buildkite"),
-            ("TF_BUILD", "azure_devops"),
-            ("TEAMCITY_VERSION", "teamcity"),
-            ("CODEBUILD_BUILD_ID", "aws_codebuild"),
-            ("HEROKU_TEST_RUN_ID", "heroku_ci"),
-            ("CI", "generic_ci"),  # catch-all — must be last
-        ]
-        for env_var, platform in checks:
-            if os.environ.get(env_var):
-                return platform
-        return None
-
-    def _send_telemetry(self, event: str, properties: dict) -> None:
-        if os.environ.get("TELEMETRY", "true").lower() != "true":
-            return
-
-        install_id = os.environ.get("PDAVID_INSTALL_ID", "unknown")
-        if not install_id or install_id == "unknown":
-            return
-
-        try:
-            version = importlib.metadata.version("projectdavid-platform")
-        except importlib.metadata.PackageNotFoundError:
-            version = "unknown"
-
-        ci_platform = self._detect_ci()
-        payload = {
-            "api_key": POSTHOG_API_KEY,
-            "event": event,
-            "distinct_id": install_id,
-            "properties": {
-                "version": version,
-                "platform": _platform.system().lower(),
-                "python": f"{sys.version_info.major}.{sys.version_info.minor}",
-                "mode": getattr(self.args, "mode", "unknown"),
-                "flags": [
-                    f
-                    for f in ("training", "ollama", "vllm", "gpu")
-                    if getattr(self.args, f, False)
-                ],
-                "ci": ci_platform is not None,
-                "ci_platform": ci_platform,
-                **properties,
-            },
-        }
-
-        def _post() -> None:
-            try:
-                data = json.dumps(payload).encode("utf-8")
-                req = urllib.request.Request(
-                    POSTHOG_ENDPOINT,
-                    data=data,
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=3) as _:  # nosec B310
-                    pass
-            except Exception as telemetry_err:
-                self.log.debug("Telemetry skipped: %s", telemetry_err)
-
-        threading.Thread(target=_post, daemon=True).start()
-
-    # ------------------------------------------------------------------
-    # Config file bootstrap
-    # ------------------------------------------------------------------
 
     def _ensure_config_files(self) -> None:
         copied = []
@@ -705,161 +497,6 @@ class Orchestrator:
                 + "\n".join(f"    {f}" for f in copied)
                 + "\n  Edit them freely — pdavid will never overwrite local copies.\n"
             )
-
-    # ------------------------------------------------------------------
-    # Compose-file audit — called only from _handle_up
-    # ------------------------------------------------------------------
-
-    def _file_sha256(self, path: Path) -> str:
-        h = hashlib.sha256()
-        h.update(path.read_bytes())
-        return h.hexdigest()[:12]
-
-    def _bundled_sha256(self, pkg_rel: str) -> Optional[str]:
-        try:
-            pkg_files = importlib.resources.files(PACKAGE_NAME)
-            resource = pkg_files
-            for part in pkg_rel.split("/"):
-                resource = resource / part
-            with importlib.resources.as_file(resource) as src:
-                return self._file_sha256(Path(src))
-        except Exception:
-            return None
-
-    def _audit_compose_files(self, *, interactive: bool = True) -> List[Path]:
-        stale: List[tuple] = []
-
-        for pkg_rel, cwd_rel in _AUDITED_FILES:
-            local = Path.cwd() / cwd_rel
-            if not local.exists():
-                continue
-
-            bundled_hash = self._bundled_sha256(pkg_rel)
-            if bundled_hash is None:
-                self.log.debug(
-                    "Could not read bundled copy of '%s' — skipping audit.", pkg_rel
-                )
-                continue
-
-            local_hash = self._file_sha256(local)
-            if local_hash != bundled_hash:
-                stale.append((pkg_rel, cwd_rel, local, bundled_hash))
-
-        if not stale:
-            self.log.debug(
-                "Compose-file audit: all %d file(s) are current.", len(_AUDITED_FILES)
-            )
-            return []
-
-        typer.echo("\n" + "=" * 62)
-        typer.echo("  Compose-file audit — updates available")
-        typer.echo("=" * 62)
-        typer.echo(
-            f"  {len(stale)} managed file(s) in your CWD differ from the\n"
-            "  version bundled with the installed package.\n"
-        )
-        typer.echo(f"  {'File':<38}  {'local':>12}  {'bundled':>12}")
-        typer.echo("  " + "-" * 66)
-        for _, cwd_rel, local, bundled_hash in stale:
-            local_hash = self._file_sha256(local)
-            typer.echo(f"  {cwd_rel:<38}  {local_hash:>12}  {bundled_hash:>12}")
-        typer.echo()
-        typer.echo(
-            "  Your customisations inside these files will be lost if you\n"
-            "  replace them.  Originals are saved to:\n"
-            "    .pdavid_backup/<timestamp>/\n"
-            "  before any replacement, so you can diff and cherry-pick.\n"
-        )
-        typer.echo("=" * 62)
-
-        stale_paths = [p for _, _, p, _ in stale]
-
-        if not interactive:
-            return stale_paths
-
-        if not sys.stdin.isatty():
-            typer.echo(
-                "\n  [info] Non-interactive environment — skipping replacement.\n"
-                "  Run  pdavid audit  to update interactively.\n"
-            )
-            return stale_paths
-
-        replace = typer.confirm(
-            "\n  Replace all stale file(s) with the bundled versions?",
-            default=False,
-        )
-
-        if not replace:
-            typer.echo(
-                "\n  Skipped.  Your existing files are unchanged.\n"
-                "  Re-run  pdavid audit  any time to revisit.\n"
-            )
-            return stale_paths
-
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        try:
-            pkg_ver = importlib.metadata.version("projectdavid-platform")
-        except importlib.metadata.PackageNotFoundError:
-            pkg_ver = "unknown"
-
-        backup_dir = Path.cwd() / ".pdavid_backup" / f"{ts}_from_{pkg_ver}"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        typer.echo(f"\n  Backing up to: {backup_dir}\n")
-
-        replaced: List[str] = []
-        failed: List[str] = []
-
-        for pkg_rel, cwd_rel, local, _ in stale:
-            dest_backup = backup_dir / cwd_rel
-            try:
-                dest_backup.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(local, dest_backup)
-            except Exception as e:
-                self.log.warning(
-                    "Could not back up '%s': %s — skipping replacement.", cwd_rel, e
-                )
-                failed.append(cwd_rel)
-                continue
-
-            try:
-                pkg_files = importlib.resources.files(PACKAGE_NAME)
-                resource = pkg_files
-                for part in pkg_rel.split("/"):
-                    resource = resource / part
-                with importlib.resources.as_file(resource) as src:
-                    shutil.copy2(src, local)
-                replaced.append(cwd_rel)
-                typer.echo(f"  ✓  {cwd_rel}")
-            except Exception as e:
-                self.log.error("Could not replace '%s': %s", cwd_rel, e)
-                try:
-                    shutil.copy2(dest_backup, local)
-                    self.log.info("Restored backup of '%s'.", cwd_rel)
-                except Exception as restore_err:
-                    self.log.debug(
-                        "Failed to restore backup of '%s': %s", cwd_rel, restore_err
-                    )
-                failed.append(cwd_rel)
-
-        typer.echo()
-        if replaced:
-            typer.echo(
-                f"  {len(replaced)} file(s) replaced successfully.\n"
-                f"  Originals saved to: {backup_dir}\n"
-            )
-        if failed:
-            typer.echo(
-                f"  {len(failed)} file(s) could not be replaced:\n"
-                + "\n".join(f"    {f}" for f in failed)
-                + "\n"
-            )
-
-        typer.echo("=" * 62 + "\n")
-        return stale_paths
-
-    # ------------------------------------------------------------------
-    # Preflight
-    # ------------------------------------------------------------------
 
     def _has_docker(self) -> bool:
         if shutil.which("docker"):
@@ -956,10 +593,6 @@ class Orchestrator:
         self.log.debug("Preflight checks passed.")
         return True
 
-    # ------------------------------------------------------------------
-    # Compose file and profile resolution
-    # ------------------------------------------------------------------
-
     def _compose_files(self) -> list:
         files = [
             "--project-directory",
@@ -978,10 +611,6 @@ class Orchestrator:
 
         return files
 
-    # ------------------------------------------------------------------
-    # Utilities
-    # ------------------------------------------------------------------
-
     def _get_all_services(self) -> List[str]:
         if not self.compose_config:
             return []
@@ -999,12 +628,12 @@ class Orchestrator:
         if not suppress_logs:
             self.log.info("Running: %s", " ".join(str(c) for c in cmd_list))
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # nosec B602 B603 B607
                 cmd_list,
                 check=check,
                 capture_output=capture_output,
                 text=text,
-                shell=self.is_windows,  # nosec B602
+                shell=self.is_windows,
                 **kwargs,
             )
             return result
@@ -1032,7 +661,6 @@ class Orchestrator:
                 "__pycache__/\n.venv/\nnode_modules/\n*.log\n*.pyc\n.git/\n"
                 ".env*\n.env\n*.sqlite\ndist/\nbuild/\ncoverage/\ntmp/\n*.egg-info/\n"
                 ".pdavid.lic\n"
-                ".pdavid_backup/\n"
             )
 
     def _load_compose_config(self):
@@ -1082,10 +710,6 @@ class Orchestrator:
         os.environ["NODE_ID"] = node_id
         self.log.info("NODE_ID set to: %s", node_id)
 
-    # ------------------------------------------------------------------
-    # .env generation
-    # ------------------------------------------------------------------
-
     def _prompt_user_required(self, env_values: dict, generation_log: dict):
         inherited = {}
         needs_prompt = {}
@@ -1116,15 +740,6 @@ class Orchestrator:
         typer.echo("\n" + "=" * 60)
         typer.echo("  Optional: User-Supplied Configuration")
         typer.echo("=" * 60)
-        typer.echo(
-            "  The following values cannot be auto-generated.\n"
-            "  Press Enter to skip — the stack will start fine without\n"
-            "  them, but related features will be unavailable until set.\n"
-            "\n"
-            "  Set them any time later with:\n"
-            "    pdavid configure --interactive\n"
-            "    pdavid configure --set KEY=value\n"
-        )
         for key, (label, help_text, hide) in needs_prompt.items():
             typer.echo(f"  {help_text}\n")
             value = typer.prompt(
@@ -1199,7 +814,6 @@ class Orchestrator:
             )
 
         self._prompt_user_required(env_values, generation_log)
-        self._prompt_telemetry(env_values)
 
         env_lines = [
             f"# Auto-generated by projectdavid-platform — {time.strftime('%Y-%m-%d %H:%M:%S %Z')}",
@@ -1271,7 +885,6 @@ class Orchestrator:
         else:
             self.log.info("'%s' exists — loading.", self._ENV_FILE)
             load_dotenv(dotenv_path=self._ENV_FILE, override=True)
-            self._migrate_env_telemetry()
 
     def _configure_shared_path(self):
         system = _platform.system().lower()
@@ -1298,10 +911,6 @@ class Orchestrator:
             hf_path = os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
             os.environ["HF_CACHE_PATH"] = hf_path
             self.log.info("Defaulting HF_CACHE_PATH to: %s", hf_path)
-
-    # ------------------------------------------------------------------
-    # Training overlay env injection
-    # ------------------------------------------------------------------
 
     def _merge_env_for_training(self) -> None:
         env_path = Path(self._ENV_FILE)
@@ -1341,7 +950,7 @@ class Orchestrator:
         if injected:
             env_path.write_text(content, encoding="utf-8")
             typer.echo(
-                f"\n  ✚ Added {len(injected)} variable(s) to .env for Sovereign Forge:\n"
+                f"\n  Added {len(injected)} variable(s) to .env for Sovereign Forge:\n"
                 + "\n".join(f"    {k}" for k in injected)
                 + "\n  Edit them any time: pdavid configure --set KEY=VALUE\n"
             )
@@ -1357,18 +966,6 @@ class Orchestrator:
         typer.echo("\n" + "=" * 60)
         typer.echo("  Sovereign Forge — Node Role Configuration")
         typer.echo("=" * 60)
-        typer.echo(
-            "\n"
-            "  This node will run the Sovereign Forge training stack.\n"
-            "  Choose the role for this machine:\n\n"
-            "  HEAD NODE   — Starts the Ray cluster. Runs the Ray dashboard.\n"
-            "                All other GPU machines join this node.\n"
-            "                Choose this for your primary / first machine.\n\n"
-            "  WORKER NODE — Joins an existing Ray cluster started on another\n"
-            "                machine. Adds GPU capacity to the cluster.\n"
-            "                Choose this for machines 2, 3, N.\n"
-            "                (Simpler: use `pdavid worker --join <ip>` instead)\n"
-        )
 
         is_worker = typer.confirm(
             "  Is this a WORKER node joining an existing cluster?", default=False
@@ -1376,11 +973,9 @@ class Orchestrator:
 
         if not is_worker:
             typer.echo(
-                "\n  ✓ HEAD NODE configured.\n"
+                "\n  HEAD NODE configured.\n"
                 "    Ray cluster will start on this machine.\n"
                 "    Dashboard: http://localhost:80/ray/\n"
-                "    Worker nodes can join with:\n"
-                "      pdavid worker --join <this-machine-ip>\n"
             )
             return ""
 
@@ -1388,15 +983,10 @@ class Orchestrator:
         ray_port = typer.prompt("  Ray client port", default="10001")
         ray_address = f"ray://{head_ip}:{ray_port}"
         typer.echo(
-            f"\n  ✓ WORKER NODE configured.\n"
+            f"\n  WORKER NODE configured.\n"
             f"    Will join cluster at: {ray_address}\n"
-            f"    This node will NOT start a Ray dashboard.\n"
         )
         return ray_address
-
-    # ------------------------------------------------------------------
-    # Port conflict checks
-    # ------------------------------------------------------------------
 
     def _check_port_conflicts(self, ports: dict) -> bool:
         blocked = []
@@ -1428,7 +1018,7 @@ class Orchestrator:
             typer.echo("  Port conflict — startup blocked", err=True)
             typer.echo("=" * 60, err=True)
             for port, label in blocked:
-                typer.echo(f"  ✗  Port {port} ({label}) is already in use.", err=True)
+                typer.echo(f"  Port {port} ({label}) is already in use.", err=True)
             typer.echo(
                 "\n  Free the ports above and re-run:\n"
                 "    pdavid --mode down\n"
@@ -1439,10 +1029,6 @@ class Orchestrator:
             return False
 
         return True
-
-    # ------------------------------------------------------------------
-    # Secret validation
-    # ------------------------------------------------------------------
 
     def _validate_secrets(self):
         failed = False
@@ -1464,10 +1050,6 @@ class Orchestrator:
                     key,
                 )
 
-    # ------------------------------------------------------------------
-    # Container checks
-    # ------------------------------------------------------------------
-
     def _is_container_running(self, container_name: str) -> bool:
         try:
             result = self._run_command(
@@ -1487,57 +1069,116 @@ class Orchestrator:
         except Exception:
             return False
 
-    # ------------------------------------------------------------------
-    # Admin key management
-    # ------------------------------------------------------------------
+    def _persist_admin_api_key(self, api_key: str) -> None:
+        """Persist the real admin credential returned by Project David Core."""
+        if not api_key or not api_key.startswith("ad_"):
+            raise ValueError("Invalid Project David admin API key")
 
-    def _provision_admin_api_key(self) -> str:
-        env_path = Path(self._ENV_FILE)
-        content = env_path.read_text(encoding="utf-8")
+        set_key(self._ENV_FILE, "ADMIN_API_KEY", api_key)
+        os.environ["ADMIN_API_KEY"] = api_key
+        self.log.info("Project David ADMIN_API_KEY persisted from Core bootstrap.")
 
-        existing = os.environ.get("ADMIN_API_KEY", "").strip()
-        if existing and existing not in self._INSECURE_VALUES:
-            self.log.info("ADMIN_API_KEY already present in .env — reusing.")
-            return existing
+    @staticmethod
+    def _extract_json_payload(output: str) -> dict:
+        """Extract the bootstrap JSON object from command output.
 
-        new_key = f"ad_{secrets.token_urlsafe(32)}"
+        Runtime logging may appear around the machine-readable line, so parse
+        backwards and accept the final object that carries a bootstrap status.
+        """
+        for line in reversed(output.splitlines()):
+            candidate = line.strip()
+            if not candidate.startswith("{"):
+                continue
+            try:
+                payload = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict) and "status" in payload:
+                return payload
 
-        if re.search(r"^ADMIN_API_KEY=", content, re.MULTILINE):
-            content = re.sub(
-                r"^ADMIN_API_KEY=.*",
-                f"ADMIN_API_KEY={new_key}",
-                content,
-                flags=re.MULTILINE,
+        raise ValueError("Project David bootstrap did not return a valid JSON result")
+
+    @staticmethod
+    def _extract_legacy_bootstrap(output: str) -> dict:
+        """Normalize bootstrap output from Core releases that predate --json."""
+        api_key_match = re.search(r"API KEY\s*:\s*(ad_[^\s]+)", output)
+        user_id_match = re.search(r"User ID\s*:\s*([^\s]+)", output)
+        prefix_match = re.search(r"Prefix\s*:\s*([^\s]+)", output)
+
+        if api_key_match:
+            api_key = api_key_match.group(1)
+            return {
+                "status": "ok",
+                "user_id": (user_id_match.group(1) if user_id_match else None),
+                "email": None,
+                "key_prefix": (prefix_match.group(1) if prefix_match else api_key[:8]),
+                "user_created": None,
+                "key_created": True,
+                "api_key": api_key,
+                "protocol": "legacy",
+            }
+
+        existing_prefix = re.search(
+            r"already has an API key \(prefix=([^)]+)\)", output
+        )
+        if existing_prefix:
+            return {
+                "status": "ok",
+                "user_id": None,
+                "email": None,
+                "key_prefix": existing_prefix.group(1),
+                "user_created": None,
+                "key_created": False,
+                "api_key": None,
+                "protocol": "legacy",
+            }
+
+        raise ValueError("Unable to parse Project David legacy bootstrap output")
+
+    @staticmethod
+    def _json_protocol_unsupported(output: str) -> bool:
+        lowered = output.lower()
+        return "--json" in lowered and any(
+            marker in lowered
+            for marker in (
+                "no such option",
+                "unexpected extra argument",
+                "unrecognized arguments",
             )
-        else:
-            content += f"\nADMIN_API_KEY={new_key}\n"
+        )
 
-        env_path.write_text(content, encoding="utf-8")
-        os.environ["ADMIN_API_KEY"] = new_key
-        self.log.info("ADMIN_API_KEY written to .env.")
-        return new_key
-
-    # ------------------------------------------------------------------
-    # Action handlers
-    # ------------------------------------------------------------------
+    def _resolve_db_credentials(self):
+        """
+        Resolve DB credentials from environment for use in docker exec mysql commands.
+        Returns (user, password, database) or raises SystemExit.
+        """
+        load_dotenv(dotenv_path=self._ENV_FILE, override=False)
+        user = os.environ.get("MYSQL_USER", "")
+        password = os.environ.get("MYSQL_PASSWORD", "")
+        database = os.environ.get("MYSQL_DATABASE", "entities_db")
+        if not user or not password:
+            typer.echo(
+                "\n  [error] MYSQL_USER or MYSQL_PASSWORD not found in .env.\n"
+                "  Ensure the stack has been initialised with: pdavid --mode up\n",
+                err=True,
+            )
+            raise SystemExit(1)
+        return user, password, database
 
     def _handle_up(self):
         load_dotenv(dotenv_path=self._ENV_FILE, override=True)
         self._validate_secrets()
         self._check_version_upgrade()
 
-        # Audit compose files only on up — not on down
-        self._audit_compose_files()
-
         up_cmd = ["docker", "compose"] + self._compose_files() + ["up"]
-
         if not getattr(self.args, "attached", False):
             up_cmd.append("-d")
+        if getattr(self.args, "build_before_up", False):
+            up_cmd.append("--build")
         if getattr(self.args, "force_recreate", False):
             up_cmd.append("--force-recreate")
-
-        # Always pull from registry — never build locally
-        up_cmd.extend(["--pull", "always"])
+        if getattr(self.args, "pull", False):
+            up_cmd.extend(["--pull", "always"])
 
         exclude = set(getattr(self.args, "exclude", None) or [])
         target = list(getattr(self.args, "services", None) or [])
@@ -1554,11 +1195,6 @@ class Orchestrator:
                 target = [s for s in target if s not in exclude]
             else:
                 target = [s for s in all_svcs if s not in exclude]
-            self.log.info(
-                "Starting services (excluding %s): %s",
-                ", ".join(sorted(exclude)),
-                ", ".join(target),
-            )
 
         if target:
             up_cmd.extend(target)
@@ -1566,9 +1202,7 @@ class Orchestrator:
         try:
             self._run_command(up_cmd, check=True)
             self.log.info("Stack started successfully.")
-            self._send_telemetry("pdavid_up", {"services": target or "all"})
         except subprocess.CalledProcessError:
-            self._send_telemetry("pdavid_up_failed", {})
             raise SystemExit(1)
 
     def _handle_down(self):
@@ -1585,7 +1219,20 @@ class Orchestrator:
         if target_services:
             down_cmd.extend(target_services)
         self._run_command(down_cmd, check=False)
-        self._send_telemetry("pdavid_down", {})
+
+    def _handle_build(self):
+        target_services = getattr(self.args, "services", None) or []
+        build_cmd = ["docker", "compose"] + self._compose_files() + ["build"]
+        if getattr(self.args, "no_cache", False):
+            build_cmd.append("--no-cache")
+        if getattr(self.args, "parallel", False):
+            build_cmd.append("--parallel")
+        if target_services:
+            build_cmd.extend(target_services)
+        try:
+            self._run_command(build_cmd, check=True)
+        except subprocess.CalledProcessError:
+            raise SystemExit(1)
 
     def _handle_logs(self):
         target_services = getattr(self.args, "services", None) or []
@@ -1636,10 +1283,6 @@ class Orchestrator:
         )
         self.log.info("Nuke complete.")
 
-    # ------------------------------------------------------------------
-    # Exec helpers
-    # ------------------------------------------------------------------
-
     def _ensure_api_running(self, action: str):
         if not self._is_container_running(API_CONTAINER_NAME):
             self.log.error(
@@ -1648,7 +1291,13 @@ class Orchestrator:
             )
             raise SystemExit(1)
 
-    def exec_bootstrap_admin(self, db_url: Optional[str] = None):
+    def exec_bootstrap_admin(self, db_url: Optional[str] = None) -> dict:
+        """Bootstrap Core and return a normalized machine-readable result.
+
+        New Core images are queried using the JSON protocol.  Older Core images
+        are supported by a one-time fallback to their human-readable output.
+        Project David Core remains the sole authority that creates the key.
+        """
         self._ensure_api_running("bootstrap-admin")
         resolved_db_url = db_url or os.environ.get("DATABASE_URL")
         if not resolved_db_url:
@@ -1657,7 +1306,8 @@ class Orchestrator:
                 "Ensure DATABASE_URL is set in .env or pass --db-url explicitly."
             )
             raise SystemExit(1)
-        cmd = [
+
+        base_cmd = [
             "docker",
             "compose",
             "--project-directory",
@@ -1667,29 +1317,114 @@ class Orchestrator:
             "-f",
             self.base_compose,
             "exec",
+            "-T",
             API_SERVICE_NAME,
             "python",
             "/app/src/api/entities_api/cli/bootstrap_admin.py",
             "--db-url",
             resolved_db_url,
         ]
-        try:
-            self._run_command(cmd, check=True, suppress_logs=True)
-            self.log.info(
-                "bootstrap-admin finished. "
-                "Copy any printed ADMIN_API_KEY — it is required for API-level user provisioning."
+
+        # Preferred protocol: Core emits one structured bootstrap result.
+        result = self._run_command(
+            base_cmd + ["--json"],
+            check=False,
+            capture_output=True,
+            suppress_logs=True,
+        )
+        combined = "\n".join(
+            part
+            for part in (
+                getattr(result, "stdout", ""),
+                getattr(result, "stderr", ""),
             )
-        except subprocess.CalledProcessError:
+            if part
+        )
+
+        if result.returncode == 0:
+            try:
+                payload = self._extract_json_payload(combined)
+            except ValueError as exc:
+                self.log.error(str(exc))
+                raise SystemExit(1)
+        else:
+            if not self._json_protocol_unsupported(combined):
+                self.log.error("Project David bootstrap failed:\n%s", combined.strip())
+                raise SystemExit(1)
+
+            self.log.info(
+                "Core does not support bootstrap JSON protocol; "
+                "falling back to legacy bootstrap output."
+            )
+            legacy = self._run_command(
+                base_cmd,
+                check=False,
+                capture_output=True,
+                suppress_logs=True,
+            )
+            legacy_output = "\n".join(
+                part
+                for part in (
+                    getattr(legacy, "stdout", ""),
+                    getattr(legacy, "stderr", ""),
+                )
+                if part
+            )
+
+            if legacy.returncode != 0:
+                self.log.error(
+                    "Legacy Project David bootstrap failed:\n%s",
+                    legacy_output.strip(),
+                )
+                raise SystemExit(1)
+
+            try:
+                payload = self._extract_legacy_bootstrap(legacy_output)
+            except ValueError as exc:
+                self.log.error(str(exc))
+                raise SystemExit(1)
+
+        if payload.get("status") != "ok":
+            self.log.error(
+                "Project David bootstrap returned an error result: %s", payload
+            )
             raise SystemExit(1)
 
-    # ------------------------------------------------------------------
-    # Main dispatch
-    # ------------------------------------------------------------------
+        api_key = payload.get("api_key")
+        prefix = payload.get("key_prefix")
+
+        if api_key:
+            # Persist the actual plaintext generated and registered by Core.
+            self._persist_admin_api_key(str(api_key))
+        else:
+            # Core already has a hashed key and therefore cannot return plaintext.
+            # Platform must already possess the original plaintext from first boot.
+            existing = os.environ.get("ADMIN_API_KEY", "").strip()
+            if not existing:
+                self.log.error(
+                    "Project David already has an admin key, but Platform no "
+                    "longer possesses its plaintext. Credential recovery/rotation "
+                    "is required."
+                )
+                raise SystemExit(1)
+
+            if prefix and not existing.startswith(str(prefix)):
+                self.log.error(
+                    "Stored ADMIN_API_KEY does not match the Project David "
+                    "admin key prefix (%s). Credential recovery/rotation is "
+                    "required.",
+                    prefix,
+                )
+                raise SystemExit(1)
+
+            payload["api_key"] = existing
+
+        payload["protocol"] = payload.get("protocol", "json-v1")
+        self.log.info("bootstrap-admin finished.")
+        return payload
 
     def run(self):
         mode = getattr(self.args, "mode", "up")
-        training = getattr(self.args, "training", False)
-        ollama = getattr(self.args, "ollama", False)
 
         if getattr(self.args, "vllm", False):
             typer.echo(
@@ -1705,14 +1440,7 @@ class Orchestrator:
                 err=True,
             )
 
-        suffix_parts = []
-        if ollama:
-            suffix_parts.append("Ollama")
-        if training:
-            suffix_parts.append("Sovereign Forge")
-        suffix = (" + " + " + ".join(suffix_parts)) if suffix_parts else ""
-
-        self.log.info("Mode: %s%s", mode, suffix)
+        self.log.info("Mode: %s", mode)
 
         if getattr(self.args, "nuke", False):
             if not self._preflight():
@@ -1732,7 +1460,13 @@ class Orchestrator:
             if mode == "down_only":
                 return
 
-        if mode == "up":
+        if mode == "build":
+            self._handle_build()
+            return
+
+        if mode in ("up", "both"):
+            if mode == "both":
+                self._handle_build()
             self._handle_up()
 
 
@@ -1778,9 +1512,9 @@ class WorkerNodeOrchestrator:
         if not suppress_logs:
             self.log.info("Running: %s", " ".join(str(c) for c in cmd_list))
         try:
-            return subprocess.run(
+            return subprocess.run(  # nosec B602 B603 B607
                 cmd_list, check=check, shell=self.is_windows
-            )  # nosec B602
+            )
         except subprocess.CalledProcessError as e:
             self.log.error("Command failed (code %s).", e.returncode)
             if check:
@@ -1832,13 +1566,11 @@ class WorkerNodeOrchestrator:
         typer.echo("  Verifying connectivity to head node...")
         if not self._verify_head_reachable():
             typer.echo(
-                f"\n  [error] Cannot reach head node at {self.head_ip}:{self.ray_port}.\n"
-                "  Ensure the head node is running and the port is reachable from this machine.\n"
-                "  If the head is behind a firewall, open TCP ports 10001 and 8265.\n",
+                f"\n  [error] Cannot reach head node at {self.head_ip}:{self.ray_port}.\n",
                 err=True,
             )
             raise SystemExit(1)
-        typer.echo("  ✓ Head node is reachable.\n")
+        typer.echo("  Head node is reachable.\n")
 
         image = "thanosprime/projectdavid-core-inference-worker:latest"
 
@@ -1895,21 +1627,15 @@ class WorkerNodeOrchestrator:
         try:
             self._run_command(cmd, check=True)
             typer.echo("\n" + "=" * 60)
-            typer.echo("  ✓ Worker node started successfully.")
+            typer.echo("  Worker node started successfully.")
             typer.echo(f"  Container  : inference_worker_{self.node_id}")
             typer.echo(f"  Ray cluster: {self.ray_address}")
             typer.echo(f"  Serve port : {self.serve_port}")
             typer.echo("\n  To follow logs:")
             typer.echo(f"    docker logs -f inference_worker_{self.node_id}")
-            typer.echo("\n  To stop:")
-            typer.echo(f"    docker stop inference_worker_{self.node_id}")
             typer.echo("=" * 60 + "\n")
         except subprocess.CalledProcessError:
-            typer.echo(
-                "\n  [error] Failed to start the worker container.\n"
-                "  Check that the image exists and the head node is still reachable.\n",
-                err=True,
-            )
+            typer.echo("\n  [error] Failed to start the worker container.\n", err=True)
             raise SystemExit(1)
 
 
@@ -1924,18 +1650,16 @@ def main(
     mode: str = typer.Option(
         "up",
         "--mode",
-        help="Stack action: up | down_only | logs",
+        help="Stack action: up | build | both | down_only | logs",
         show_default=True,
     ),
     training: bool = typer.Option(
         False,
         "--training",
-        help="Start the Sovereign Forge training stack. Requires NVIDIA GPU + nvidia-container-toolkit.",
+        help="Start the Sovereign Forge training stack. Requires NVIDIA GPU.",
     ),
     ollama: bool = typer.Option(
-        False,
-        "--ollama",
-        help="Start Ollama local inference. Requires NVIDIA GPU + nvidia-container-toolkit.",
+        False, "--ollama", help="Start Ollama local inference. Requires NVIDIA GPU."
     ),
     vllm: bool = typer.Option(
         False, "--vllm", help="[DEPRECATED] Use --training.", hidden=True
@@ -1959,8 +1683,18 @@ def main(
     force_recreate: bool = typer.Option(
         False, "--force-recreate", help="Force-recreate containers."
     ),
+    pull: bool = typer.Option(
+        False, "--pull", help="Pull the latest container images before starting."
+    ),
     attached: bool = typer.Option(
         False, "--attached", "-a", help="Run up in foreground."
+    ),
+    build_before_up: bool = typer.Option(
+        False, "--build-before-up", help="Build before up."
+    ),
+    no_cache: bool = typer.Option(False, "--no-cache", help="Build without cache."),
+    parallel: bool = typer.Option(
+        False, "--parallel", help="Build images in parallel."
     ),
     nuke: bool = typer.Option(
         False, "--nuke", help="DANGER: destroy all stack data. Requires confirmation."
@@ -1975,46 +1709,14 @@ def main(
     ),
     verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
 ) -> None:
-    """
-    Manage the Project David / Entities platform stack.
-
-    BASE STACK:\n
-      pdavid --mode up\n
-      pdavid --mode up --exclude samba\n
-      pdavid --mode logs --follow\n
-      pdavid --mode down_only\n
-
-    SOVEREIGN FORGE (opt-in, requires NVIDIA GPU):\n
-      pdavid --mode up --training\n
-
-    SCALE-OUT:\n
-      pdavid worker --join <head-node-ip>\n
-
-    CONFIGURATION:\n
-      pdavid configure --set HF_TOKEN=hf_abc123\n
-      pdavid bootstrap-admin\n
-
-    AUDIT:\n
-      pdavid audit\n
-      pdavid audit --check\n
-
-    TELEMETRY:\n
-      pdavid configure --set TELEMETRY=false\n
-    """
+    """Manage the Project David / Entities platform stack."""
     if ctx.invoked_subcommand is not None:
         return
 
-    valid_modes = {"up", "down_only", "logs"}
+    valid_modes = {"up", "build", "both", "down_only", "logs"}
     if mode not in valid_modes:
         typer.echo(
             f"[error] Invalid --mode '{mode}'. Choose from: {', '.join(sorted(valid_modes))}",
-            err=True,
-        )
-        raise SystemExit(1)
-
-    if exclude and mode != "up":
-        typer.echo(
-            f"[error] --exclude is only valid with --mode=up (got '{mode}').",
             err=True,
         )
         raise SystemExit(1)
@@ -2033,7 +1735,11 @@ def main(
         down=down,
         clear_volumes=clear_volumes,
         force_recreate=force_recreate,
+        pull=pull,
         attached=attached,
+        build_before_up=build_before_up,
+        no_cache=no_cache,
+        parallel=parallel,
         nuke=nuke,
         follow=follow,
         tail=tail,
@@ -2138,29 +1844,19 @@ def configure(
         typer.echo("\n" + "=" * 60)
         typer.echo("  Interactive Configuration")
         typer.echo("=" * 60)
-        typer.echo("  Press Enter to skip and leave current value unchanged.\n")
         for key, (label, help_text, hide) in Orchestrator._USER_REQUIRED.items():
             current = os.environ.get(key, "")
-            status = (
-                "(currently set)"
-                if current
-                else "(currently blank — press Enter to skip)"
-            )
+            status = "(currently set)" if current else "(currently blank)"
             typer.echo(f"  {help_text}\n")
             value = typer.prompt(
                 f"  {label} {status}", default="", show_default=False, hide_input=hide
             )
             if value.strip():
                 updates[key] = value.strip()
-                typer.echo(f"  {key} will be updated.\n")
-            else:
-                typer.echo(f"  {key} unchanged.\n")
         typer.echo("=" * 60 + "\n")
 
     if not updates:
-        typer.echo(
-            "Nothing to update. Use --set KEY=VALUE or --interactive.\nExample: pdavid configure --set HF_TOKEN=hf_abc123"
-        )
+        typer.echo("Nothing to update. Use --set KEY=VALUE or --interactive.")
         raise SystemExit(0)
 
     content = env_path.read_text(encoding="utf-8")
@@ -2184,10 +1880,7 @@ def configure(
 
     if dangerous:
         typer.echo(
-            f"\nWARNING: {', '.join(dangerous)} cannot be safely rotated on a live stack.\n"
-            "  Back up your data, then:\n"
-            "    pdavid --mode down --clear-volumes\n"
-            "    pdavid --mode up"
+            f"\nWARNING: {', '.join(dangerous)} cannot be safely rotated on a live stack."
         )
     elif requires_down:
         typer.echo(
@@ -2199,84 +1892,51 @@ def configure(
         typer.echo("\n  Restart to apply: pdavid --mode up --force-recreate")
 
 
-@app.command(name="audit")
-def audit_files(
-    check: bool = typer.Option(
-        False,
-        "--check",
-        "-c",
-        help="Report stale files but do not prompt for replacement (exits 1 if any found).",
-    ),
-    verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
-) -> None:
-    """
-    Audit managed compose and config files in the current directory.
-
-    Compares each file against the version bundled with the installed package
-    and offers to replace outdated files, saving originals to .pdavid_backup/.
-
-    Examples:\n
-      pdavid audit                # interactive — prompts to replace\n
-      pdavid audit --check        # CI-safe — exits 1 if any files are stale\n
-    """
-    args = SimpleNamespace(
-        verbose=verbose, training=False, ollama=False, vllm=False, gpu=False
-    )
-    o = Orchestrator(args)
-    stale = o._audit_compose_files(interactive=not check)
-
-    if check and stale:
-        typer.echo(
-            f"\n  [check] {len(stale)} stale file(s) found. Run  pdavid audit  to update.\n",
-            err=True,
-        )
-        raise SystemExit(1)
-
-
 @app.command(name="bootstrap-admin")
 def bootstrap_admin(
     db_url: Optional[str] = typer.Option(
         None, "--db-url", help="Override DATABASE_URL."
     ),
     verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit a machine-readable bootstrap result.",
+    ),
 ) -> None:
-    """
-    Provision the default admin user inside the running api container.
-
-    Safe to re-run: existing users and keys are detected and left untouched.
-    """
+    """Provision the default admin user inside the running API container."""
     args = SimpleNamespace(
         verbose=verbose, training=False, ollama=False, vllm=False, gpu=False
     )
     o = Orchestrator(args)
-    admin_key = o._provision_admin_api_key()
-    o.exec_bootstrap_admin(db_url=db_url)
+    result = o.exec_bootstrap_admin(db_url=db_url)
+
+    if json_output:
+        typer.echo(json.dumps(result, separators=(",", ":")))
+        return
 
     typer.echo("\n" + "=" * 60)
     typer.echo("  Bootstrap complete.")
-    typer.echo(f"  ADMIN_API_KEY : {admin_key}")
-    typer.echo("  Store this key securely — it will not be shown again.")
+    typer.echo(f"  Admin user : {result.get('user_id') or 'existing'}")
+    typer.echo(f"  Key prefix : {result.get('key_prefix') or 'unknown'}")
+    typer.echo(f"  Key created: {'yes' if result.get('key_created') else 'no'}")
+    typer.echo("  ADMIN_API_KEY is stored in the platform .env.")
     typer.echo("=" * 60 + "\n")
 
 
 @app.command(name="cache")
 def cache_inspect(
     node: str = typer.Option(
-        INFERENCE_WORKER_CONTAINER,
-        "--node",
-        help="Container name to inspect. Defaults to inference_worker.",
+        INFERENCE_WORKER_CONTAINER, "--node", help="Container name to inspect."
     ),
     list_cache: bool = typer.Option(
         False, "--list", "-l", help="Scan and list all cached models."
     ),
     download: Optional[str] = typer.Option(
-        None,
-        "--download",
-        "-d",
-        help="Download a model into the cache. Pass the HuggingFace repo ID.",
+        None, "--download", "-d", help="Download a model by HuggingFace repo ID."
     ),
     delete: Optional[str] = typer.Option(
-        None, "--delete", help="Remove a specific model from the cache by repo ID."
+        None, "--delete", help="Remove a model from the cache by repo ID."
     ),
     disk_usage: bool = typer.Option(
         False, "--disk-usage", "-u", help="Show disk usage per cached model."
@@ -2288,8 +1948,8 @@ def cache_inspect(
 
     Examples:\n
       pdavid cache --list\n
-      pdavid cache --download unsloth/qwen2.5-1.5b-instruct-unsloth-bnb-4bit\n
-      pdavid cache --delete unsloth/qwen2.5-1.5b-instruct-unsloth-bnb-4bit\n
+      pdavid cache --download Qwen/Qwen2.5-VL-7B-Instruct-AWQ\n
+      pdavid cache --delete Qwen/Qwen2.5-VL-3B-Instruct-AWQ\n
       pdavid cache --disk-usage\n
       pdavid cache --list --node inference_worker_2\n
     """
@@ -2304,20 +1964,19 @@ def cache_inspect(
     if not o._is_container_running(node):
         typer.echo(
             f"\n  [error] Container '{node}' is not running.\n"
-            f"  Start the training stack first:\n"
-            f"    pdavid --mode up --training\n",
+            f"  Start the training stack first:\n    pdavid --mode up --training\n",
             err=True,
         )
         raise SystemExit(1)
 
     def _exec(cmd: list) -> None:
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # nosec B602 B603 B607
                 ["docker", "exec", node] + cmd,
                 check=True,
                 text=True,
                 capture_output=True,
-                shell=o.is_windows,  # nosec B602
+                shell=o.is_windows,
             )
             typer.echo(result.stdout)
             if result.stderr:
@@ -2368,6 +2027,102 @@ def cache_inspect(
         typer.echo(f"  Deleted. Run 'pdavid cache --list --node {node}' to verify.")
 
 
+@app.command(name="db")
+def db_manage(
+    status: bool = typer.Option(
+        False,
+        "--status",
+        "-s",
+        help="Show active inference deployments from the database.",
+    ),
+    nuke_deployments: bool = typer.Option(
+        False,
+        "--nuke-deployments",
+        help="Wipe the inference_deployments table. Requires confirmation.",
+    ),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
+) -> None:
+    """
+    Inspect and manage the platform database.
+
+    Examples:\n
+      pdavid db --status\n
+      pdavid db --nuke-deployments\n
+    """
+    args = SimpleNamespace(
+        verbose=verbose, training=False, ollama=False, vllm=False, gpu=False
+    )
+    o = Orchestrator(args)
+
+    if not any([status, nuke_deployments]):
+        status = True
+
+    if not o._is_container_running(DB_CONTAINER_NAME):
+        typer.echo(
+            f"\n  [error] Database container '{DB_CONTAINER_NAME}' is not running.\n"
+            f"  Start the stack first:\n    pdavid --mode up\n",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    user, password, database = o._resolve_db_credentials()
+
+    def _mysql(sql: str) -> None:
+        try:
+            result = subprocess.run(  # nosec B602 B603 B607
+                [
+                    "docker",
+                    "exec",
+                    DB_CONTAINER_NAME,
+                    "mysql",
+                    f"-u{user}",
+                    f"-p{password}",
+                    database,
+                    "-e",
+                    sql,
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+                shell=o.is_windows,
+            )
+            if result.stdout:
+                typer.echo(result.stdout)
+            if result.stderr and "warning" not in result.stderr.lower():
+                typer.echo(result.stderr, err=True)
+        except subprocess.CalledProcessError as e:
+            typer.echo(
+                f"\n  [error] MySQL command failed (code {e.returncode}).\n", err=True
+            )
+            if e.stderr:
+                typer.echo(e.stderr, err=True)
+            raise SystemExit(1)
+
+    if status:
+        typer.echo(f"\n  Active inference deployments — {database}")
+        typer.echo("=" * 60)
+        _mysql(
+            "SELECT id, node_id, status, gpu_memory_utilization, max_model_len, "
+            "quantization, dtype, base_model_id FROM inference_deployments;"
+        )
+
+    if nuke_deployments:
+        typer.echo("\n  This will wipe all records from inference_deployments.")
+        typer.echo(
+            "  Ray Serve will orphan and clean up existing deployments on next poll."
+        )
+        typer.echo("=" * 60)
+        confirmed = typer.confirm("  Proceed?", default=False)
+        if not confirmed:
+            typer.echo("  Aborted.")
+            raise SystemExit(0)
+        _mysql("DELETE FROM inference_deployments;")
+        typer.echo("\n  inference_deployments table cleared.")
+        typer.echo(
+            "  Run 'pdavid ray --deployments' to confirm Ray Serve has cleaned up."
+        )
+
+
 @app.command(name="ray")
 def ray_manage(
     status: bool = typer.Option(
@@ -2392,10 +2147,12 @@ def ray_manage(
         False, "--dashboard", help="Print the Ray dashboard URL."
     ),
     kill: Optional[str] = typer.Option(
-        None,
-        "--kill",
-        "-k",
-        help="Tear down a specific Ray Serve deployment by name (e.g. vllm_dep_...).",
+        None, "--kill", "-k", help="Tear down a specific Ray Serve deployment by name."
+    ),
+    kill_all: bool = typer.Option(
+        False,
+        "--kill-all",
+        help="Tear down ALL active Ray Serve deployments and release GPU memory.",
     ),
     node: str = typer.Option(
         INFERENCE_WORKER_CONTAINER,
@@ -2413,6 +2170,7 @@ def ray_manage(
       pdavid ray --gpu\n
       pdavid ray --dashboard\n
       pdavid ray --kill vllm_dep_WwY4uagFG1wDImm93xQ7qf\n
+      pdavid ray --kill-all\n
       pdavid ray --status --node inference_worker_2\n
     """
     args = SimpleNamespace(
@@ -2420,26 +2178,25 @@ def ray_manage(
     )
     o = Orchestrator(args)
 
-    if not any([status, deployments, gpu, dashboard, kill]):
+    if not any([status, deployments, gpu, dashboard, kill, kill_all]):
         status = True
 
     if not o._is_container_running(node):
         typer.echo(
             f"\n  [error] Container '{node}' is not running.\n"
-            f"  Start the training stack first:\n"
-            f"    pdavid --mode up --training\n",
+            f"  Start the training stack first:\n    pdavid --mode up --training\n",
             err=True,
         )
         raise SystemExit(1)
 
     def _exec(cmd: list, check: bool = True) -> Optional[str]:
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # nosec B602 B603 B607
                 ["docker", "exec", node] + cmd,
                 check=check,
                 text=True,
                 capture_output=True,
-                shell=o.is_windows,  # nosec B602
+                shell=o.is_windows,
             )
             if result.stdout:
                 typer.echo(result.stdout)
@@ -2527,6 +2284,33 @@ def ray_manage(
             ]
         )
         typer.echo("\n  Run 'pdavid ray --deployments' to confirm.")
+
+    if kill_all:
+        typer.echo("\n  This will tear down ALL active Ray Serve deployments.")
+        typer.echo("  All GPU memory will be released.")
+        typer.echo("=" * 60)
+        confirmed = typer.confirm("  Proceed?", default=False)
+        if not confirmed:
+            typer.echo("  Aborted.")
+            raise SystemExit(0)
+        _exec(
+            [
+                "python",
+                "-c",
+                (
+                    "import ray; ray.init(address='auto', ignore_reinit_error=True); "
+                    "from ray import serve; "
+                    "serve.start(detached=True); "
+                    "apps = serve.status().applications; "
+                    "[serve.delete(name) for name in apps]; "
+                    "print(f'  Deleted {len(apps)} deployment(s). GPU memory released.')"
+                    " if apps else print('  No active deployments to remove.')"
+                ),
+            ]
+        )
+        typer.echo(
+            "\n  Run 'pdavid db --nuke-deployments' to also clear the DB records."
+        )
 
 
 def entry_point():
