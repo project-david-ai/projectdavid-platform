@@ -36,6 +36,9 @@ import typer
 #   pdavid --mode logs --follow             # Tail logs
 #   pdavid --mode down_only                 # Stop the stack
 #
+#   GPU INFERENCE via vLLM / Ray Serve (opt-in, requires NVIDIA GPU)
+#   pdavid --mode up --vllm                 # vLLM / Ray Serve inference only
+#
 #   GPU INFERENCE via Ollama (opt-in, requires NVIDIA GPU)
 #   pdavid --mode up --ollama               # Ollama local inference
 #
@@ -183,6 +186,8 @@ _TYPER_HELP = (
     "Install:    pip install projectdavid-platform\n\n"
     "Base stack: pdavid --mode up\n"
     "Update:     pdavid --mode up --pull\n\n"
+    "vLLM / Ray Serve inference (opt-in):\n"
+    "  pdavid --mode up --vllm\n\n"
     "Ollama inference (opt-in):\n"
     "  pdavid --mode up --ollama\n\n"
     "Sovereign Forge — training + Ray inference mesh (opt-in):\n"
@@ -572,20 +577,26 @@ class Orchestrator:
             return False
 
         training = getattr(self.args, "training", False)
+        vllm = getattr(self.args, "vllm", False)
         ollama = getattr(self.args, "ollama", False)
 
         if training and not self._validate_gpu_prereqs("--training"):
             return False
 
-        if training and not self._check_port_conflicts(
-            {
-                9001: ("training-api", "error"),
+        if vllm and not self._validate_gpu_prereqs("--vllm"):
+            return False
+
+        if training or vllm:
+            ray_ports = {
                 8265: ("Ray dashboard", "error"),
                 10001: ("Ray client server", "error"),
                 8002: ("inference-worker HTTP (Ray Serve)", "warn"),
             }
-        ):
-            return False
+            if training:
+                ray_ports[9001] = ("training-api", "error")
+
+            if not self._check_port_conflicts(ray_ports):
+                return False
 
         if ollama and not self._validate_gpu_prereqs("--ollama"):
             return False
@@ -605,6 +616,9 @@ class Orchestrator:
 
         if getattr(self.args, "ollama", False):
             files += ["-f", self.ollama_compose]
+
+        if getattr(self.args, "vllm", False):
+            files += ["--profile", "vllm"]
 
         if getattr(self.args, "training", False):
             files += ["--profile", "training"]
@@ -1209,6 +1223,11 @@ class Orchestrator:
         target_services = getattr(self.args, "services", None) or []
         down_cmd = ["docker", "compose"] + self._compose_files()
 
+        # Include both optional Ray profiles during shutdown so a plain
+        # `pdavid --mode down_only` also tears down whichever inference/training
+        # profile was started previously.
+        if not getattr(self.args, "vllm", False):
+            down_cmd += ["--profile", "vllm"]
         if not getattr(self.args, "training", False):
             down_cmd += ["--profile", "training"]
 
@@ -1270,6 +1289,8 @@ class Orchestrator:
                 self._env_file_abs,
                 "-f",
                 self.base_compose,
+                "--profile",
+                "vllm",
                 "--profile",
                 "training",
                 "down",
@@ -1426,17 +1447,11 @@ class Orchestrator:
     def run(self):
         mode = getattr(self.args, "mode", "up")
 
-        if getattr(self.args, "vllm", False):
-            typer.echo(
-                "\n  [deprecated] --vllm is no longer needed. vLLM inference is now\n"
-                "  managed inside the inference-worker container via Ray Serve.\n"
-                "  Use --training to start the full inference mesh.\n",
-                err=True,
-            )
         if getattr(self.args, "gpu", False):
             typer.echo(
-                "\n  [deprecated] --gpu is no longer needed. Use --training to start\n"
-                "  the Ray Serve inference mesh, and --ollama for Ollama inference.\n",
+                "\n  [deprecated] --gpu is no longer needed. Use --vllm for the\n"
+                "  Ray Serve/vLLM inference substrate, --ollama for Ollama,\n"
+                "  or --training for the full Sovereign Forge stack.\n",
                 err=True,
             )
 
@@ -1662,7 +1677,9 @@ def main(
         False, "--ollama", help="Start Ollama local inference. Requires NVIDIA GPU."
     ),
     vllm: bool = typer.Option(
-        False, "--vllm", help="[DEPRECATED] Use --training.", hidden=True
+        False,
+        "--vllm",
+        help="Start the vLLM / Ray Serve inference stack. Requires NVIDIA GPU.",
     ),
     gpu: bool = typer.Option(
         False,
@@ -1964,7 +1981,10 @@ def cache_inspect(
     if not o._is_container_running(node):
         typer.echo(
             f"\n  [error] Container '{node}' is not running.\n"
-            f"  Start the training stack first:\n    pdavid --mode up --training\n",
+            f"  Start the inference stack first:\n"
+            f"    pdavid --mode up --vllm\n"
+            f"  or the full training stack:\n"
+            f"    pdavid --mode up --training\n",
             err=True,
         )
         raise SystemExit(1)
@@ -2184,7 +2204,10 @@ def ray_manage(
     if not o._is_container_running(node):
         typer.echo(
             f"\n  [error] Container '{node}' is not running.\n"
-            f"  Start the training stack first:\n    pdavid --mode up --training\n",
+            f"  Start the inference stack first:\n"
+            f"    pdavid --mode up --vllm\n"
+            f"  or the full training stack:\n"
+            f"    pdavid --mode up --training\n",
             err=True,
         )
         raise SystemExit(1)
@@ -2220,7 +2243,7 @@ def ray_manage(
         typer.echo("=" * 60)
         _exec(
             [
-                "python",
+                "python3",
                 "-c",
                 (
                     "import ray; ray.init(address='auto', ignore_reinit_error=True); "
@@ -2235,7 +2258,7 @@ def ray_manage(
         typer.echo("=" * 60)
         _exec(
             [
-                "python",
+                "python3",
                 "-c",
                 (
                     "from ray import serve; "
@@ -2272,7 +2295,7 @@ def ray_manage(
             raise SystemExit(0)
         _exec(
             [
-                "python",
+                "python3",
                 "-c",
                 (
                     f"import ray; ray.init(address='auto', ignore_reinit_error=True); "
@@ -2295,7 +2318,7 @@ def ray_manage(
             raise SystemExit(0)
         _exec(
             [
-                "python",
+                "python3",
                 "-c",
                 (
                     "import ray; ray.init(address='auto', ignore_reinit_error=True); "
