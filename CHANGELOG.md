@@ -1,3 +1,15 @@
+# [1.44.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.43.1...v1.44.0) (2026-08-22)
+
+
+### Bug Fixes
+
+* Modify container version numbers back to 1.43.0 ([f731c60](https://github.com/project-david-ai/projectdavid-platform/commit/f731c609e04ed5906e1c8de5ca3b2a30641c6a11))
+
+
+### Features
+
+* restore vLLM as first-class inference mode ([dc3144b](https://github.com/project-david-ai/projectdavid-platform/commit/dc3144bca4f014d99660c2285a4370e35e6329b9))
+
 ## [1.43.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.43.0...v1.43.1) (2026-08-22)
 
 
