@@ -1,3 +1,10 @@
+## [1.43.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.43.0...v1.43.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* consume runtime-generated admin bootstrap credentials ([055a5ee](https://github.com/project-david-ai/projectdavid-platform/commit/055a5ee78a6e824e29aa441d4f26c04954f6bf80))
+
 # [1.43.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.42.0...v1.43.0) (2026-04-24)
 
 
