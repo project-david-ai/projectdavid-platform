@@ -83,10 +83,12 @@ def validate_license(license_path: Optional[str] = None) -> LicenseResult:
         from cryptography.exceptions import InvalidSignature
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
     except ImportError:
-        # cryptography not installed — skip validation (dev mode)
+        # Packaged installations declare cryptography as a runtime dependency.
+        # If it is unavailable, fail closed with an actionable result instead
+        # of treating an unverifiable license as valid.
         return LicenseResult(
-            LicenseStatus.VALID,
-            message="cryptography not installed — skipping validation",
+            LicenseStatus.INVALID,
+            message="cryptography is required for license validation.",
         )
 
     # ── Locate license file ──────────────────────────────────────────────────
