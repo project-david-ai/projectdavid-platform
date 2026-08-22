@@ -1,3 +1,10 @@
+## [1.44.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.44.1...v1.44.2) (2026-08-22)
+
+
+### Bug Fixes
+
+* include deployment API in vLLM profile ([b687823](https://github.com/project-david-ai/projectdavid-platform/commit/b6878236e3d53ef3c492c49fd8b2c0e070f09395))
+
 ## [1.44.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.44.0...v1.44.1) (2026-08-22)
 
 
