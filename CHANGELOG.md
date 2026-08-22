@@ -1,3 +1,10 @@
+## [1.44.3](https://github.com/project-david-ai/projectdavid-platform/compare/v1.44.2...v1.44.3) (2026-08-22)
+
+
+### Bug Fixes
+
+* require license crypto at runtime ([e0059fd](https://github.com/project-david-ai/projectdavid-platform/commit/e0059fdf4dbfb5110b8ebd9508bb9e53467ae9d1))
+
 ## [1.44.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.44.1...v1.44.2) (2026-08-22)
 
 
