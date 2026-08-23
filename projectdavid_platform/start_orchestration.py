@@ -245,7 +245,6 @@ def _activate_runtime_directory(runtime_dir: Optional[Path]) -> Path:
         )
 
     os.chdir(resolved)
-    os.environ["PDAVID_RUNTIME_HOME"] = str(resolved)
     log.debug("Project David runtime directory: %s", resolved)
 
     return resolved
