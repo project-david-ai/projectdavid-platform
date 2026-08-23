@@ -20,6 +20,8 @@ from urllib.parse import quote_plus
 
 import typer
 
+from projectdavid_platform.credential_handoff import handoff_admin_credential
+
 # ---------------------------------------------------------------------------
 # start_orchestration.py
 #
@@ -203,6 +205,50 @@ app = typer.Typer(
     help=_TYPER_HELP,
     add_completion=False,
 )
+
+
+def _activate_runtime_directory(runtime_dir: Optional[Path]) -> Path:
+    """
+    Activate the Project David runtime instance for this CLI process.
+
+    The launcher location and runtime instance are deliberately separate.
+    All mutable runtime state (.env, compose files, shared_data, bootstrap
+    state) belongs to the runtime directory, not to the installed launcher.
+
+    Resolution order:
+      1. --runtime-dir
+      2. PDAVID_RUNTIME_HOME
+      3. current working directory (backwards compatible)
+    """
+    configured = runtime_dir
+
+    if configured is None:
+        environment_value = os.environ.get("PDAVID_RUNTIME_HOME", "").strip()
+        if environment_value:
+            configured = Path(environment_value)
+
+    if configured is None:
+        resolved = Path.cwd().resolve()
+    else:
+        resolved = Path(configured).expanduser().resolve()
+
+    if not resolved.exists():
+        raise typer.BadParameter(
+            f"Project David runtime directory does not exist: {resolved}",
+            param_hint="--runtime-dir",
+        )
+
+    if not resolved.is_dir():
+        raise typer.BadParameter(
+            f"Project David runtime path is not a directory: {resolved}",
+            param_hint="--runtime-dir",
+        )
+
+    os.chdir(resolved)
+    os.environ["PDAVID_RUNTIME_HOME"] = str(resolved)
+    log.debug("Project David runtime directory: %s", resolved)
+
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -1662,6 +1708,15 @@ class WorkerNodeOrchestrator:
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
+    runtime_dir: Optional[Path] = typer.Option(
+        None,
+        "--runtime-dir",
+        help=(
+            "Project David runtime instance directory. "
+            "Contains .env, compose files, shared_data, and bootstrap state. "
+            "Defaults to PDAVID_RUNTIME_HOME or the current working directory."
+        ),
+    ),
     mode: str = typer.Option(
         "up",
         "--mode",
@@ -1727,6 +1782,8 @@ def main(
     verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
 ) -> None:
     """Manage the Project David / Entities platform stack."""
+    _activate_runtime_directory(runtime_dir)
+
     if ctx.invoked_subcommand is not None:
         return
 
@@ -1912,31 +1969,74 @@ def configure(
 @app.command(name="bootstrap-admin")
 def bootstrap_admin(
     db_url: Optional[str] = typer.Option(
-        None, "--db-url", help="Override DATABASE_URL."
+        None,
+        "--db-url",
+        help="Override DATABASE_URL.",
     ),
-    verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="Enable debug logging.",
+    ),
     json_output: bool = typer.Option(
         False,
         "--json",
         help="Emit a machine-readable bootstrap result.",
     ),
+    credential_file: Optional[Path] = typer.Option(
+        None,
+        "--credential-file",
+        help=(
+            "Atomically write the canonical Project David admin credential "
+            "to this file and omit the plaintext credential from output."
+        ),
+    ),
 ) -> None:
-    """Provision the default admin user inside the running API container."""
+    """
+    Provision the default admin user inside the running API container.
+
+    When --credential-file is supplied, the canonical admin credential is
+    written directly to that file and is removed from the command result.
+    This is the preferred contract for Q and other local orchestrators.
+    """
     args = SimpleNamespace(
-        verbose=verbose, training=False, ollama=False, vllm=False, gpu=False
+        verbose=verbose,
+        training=False,
+        ollama=False,
+        vllm=False,
+        gpu=False,
     )
-    o = Orchestrator(args)
-    result = o.exec_bootstrap_admin(db_url=db_url)
+
+    orchestrator = Orchestrator(args)
+
+    result = orchestrator.exec_bootstrap_admin(
+        db_url=db_url,
+    )
+
+    if credential_file is not None:
+        result = handoff_admin_credential(
+            result,
+            credential_file,
+        )
 
     if json_output:
-        typer.echo(json.dumps(result, separators=(",", ":")))
+        typer.echo(
+            json.dumps(
+                result,
+                separators=(",", ":"),
+            )
+        )
         return
 
     typer.echo("\n" + "=" * 60)
     typer.echo("  Bootstrap complete.")
     typer.echo(f"  Admin user : {result.get('user_id') or 'existing'}")
     typer.echo(f"  Key prefix : {result.get('key_prefix') or 'unknown'}")
-    typer.echo(f"  Key created: {'yes' if result.get('key_created') else 'no'}")
+    typer.echo(f"  Key created: " f"{'yes' if result.get('key_created') else 'no'}")
+
+    if credential_file is not None:
+        typer.echo(f"  Credential handoff: " f"{result.get('credential_file')}")
+
     typer.echo("  ADMIN_API_KEY is stored in the platform .env.")
     typer.echo("=" * 60 + "\n")
 
