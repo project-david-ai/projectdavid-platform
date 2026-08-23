@@ -1,3 +1,15 @@
+# [1.45.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.44.3...v1.45.0) (2026-08-23)
+
+
+### Bug Fixes
+
+* avoid leaking runtime directory across CLI invocations ([7764097](https://github.com/project-david-ai/projectdavid-platform/commit/7764097d449e58a99b29898e5c13aa61a822fe88))
+
+
+### Features
+
+* add secure runtime bootstrap handoff ([56643a6](https://github.com/project-david-ai/projectdavid-platform/commit/56643a6711367a981c0e310e22011b62f6357ebb))
+
 ## [1.44.3](https://github.com/project-david-ai/projectdavid-platform/compare/v1.44.2...v1.44.3) (2026-08-22)
 
 
