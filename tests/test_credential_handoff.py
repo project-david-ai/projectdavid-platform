@@ -1,6 +1,7 @@
 import json
 import os
 import stat
+from uuid import UUID
 
 import pytest
 from typer.testing import CliRunner
@@ -8,11 +9,58 @@ from typer.testing import CliRunner
 from projectdavid_platform import start_orchestration
 from projectdavid_platform.credential_handoff import (
     CredentialHandoffError,
+    get_or_create_runtime_instance_id,
     handoff_admin_credential,
     write_admin_credential_file,
 )
 
 runner = CliRunner()
+
+
+def test_runtime_instance_id_is_created_and_stable(tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+
+    first = get_or_create_runtime_instance_id(runtime)
+    second = get_or_create_runtime_instance_id(runtime)
+
+    assert first == second
+    assert UUID(first).version == 4
+
+    identity_file = runtime / ".projectdavid-instance-id"
+
+    assert identity_file.exists()
+    assert identity_file.read_text(encoding="utf-8") == first
+
+
+def test_runtime_instance_ids_are_unique_per_runtime(tmp_path):
+    runtime_a = tmp_path / "runtime-a"
+    runtime_b = tmp_path / "runtime-b"
+
+    runtime_a.mkdir()
+    runtime_b.mkdir()
+
+    instance_a = get_or_create_runtime_instance_id(runtime_a)
+    instance_b = get_or_create_runtime_instance_id(runtime_b)
+
+    assert instance_a != instance_b
+
+
+def test_runtime_instance_id_rejects_invalid_existing_state(tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+
+    identity_file = runtime / ".projectdavid-instance-id"
+    identity_file.write_text(
+        "not-a-valid-instance-id",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        CredentialHandoffError,
+        match="runtime instance ID is invalid",
+    ):
+        get_or_create_runtime_instance_id(runtime)
 
 
 def test_write_admin_credential_file(tmp_path):
@@ -47,7 +95,14 @@ def test_write_replaces_existing_credential(tmp_path):
     assert target.read_text(encoding="utf-8") == "ad_new_secret"
 
 
-def test_handoff_removes_plaintext_secret(tmp_path):
+def test_handoff_removes_plaintext_secret(
+    tmp_path,
+    monkeypatch,
+):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.chdir(runtime)
+
     target = tmp_path / "project-david-admin.key"
 
     bootstrap_result = {
@@ -75,11 +130,43 @@ def test_handoff_removes_plaintext_secret(tmp_path):
     assert result["credential_state"] == "ready"
     assert result["credential_file"] == str(target.resolve())
 
+    assert UUID(result["instance_id"]).version == 4
+    assert (runtime / ".projectdavid-instance-id").read_text(
+        encoding="utf-8"
+    ) == result["instance_id"]
+
     assert target.read_text(encoding="utf-8") == "ad_test_secret_value"
 
     # Sanitising the result must not mutate the original
     # bootstrap object used internally by Platform.
     assert bootstrap_result["api_key"] == "ad_test_secret_value"
+
+
+def test_handoff_reuses_runtime_instance_id(
+    tmp_path,
+    monkeypatch,
+):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.chdir(runtime)
+
+    first = handoff_admin_credential(
+        {
+            "status": "ok",
+            "api_key": "ad_first_secret",
+        },
+        tmp_path / "first.key",
+    )
+
+    second = handoff_admin_credential(
+        {
+            "status": "ok",
+            "api_key": "ad_second_secret",
+        },
+        tmp_path / "second.key",
+    )
+
+    assert first["instance_id"] == second["instance_id"]
 
 
 def test_handoff_rejects_missing_admin_credential(
@@ -134,6 +221,10 @@ def test_bootstrap_cli_credential_file_never_emits_secret(
 ):
     secret = "ad_cli_secret_that_must_not_escape"
 
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.chdir(runtime)
+
     class FakeOrchestrator:
         def __init__(self, args):
             self.args = args
@@ -173,8 +264,7 @@ def test_bootstrap_cli_credential_file_never_emits_secret(
 
     assert result.exit_code == 0
 
-    # This is the critical boundary:
-    # plaintext must never reach command output.
+    # Plaintext must never reach command output.
     assert secret not in result.stdout
     assert '"api_key"' not in result.stdout
 
@@ -182,7 +272,11 @@ def test_bootstrap_cli_credential_file_never_emits_secret(
 
     assert payload["status"] == "ok"
     assert payload["credential_state"] == "ready"
-
     assert payload["credential_file"] == str(target.resolve())
+
+    assert UUID(payload["instance_id"]).version == 4
+    assert (runtime / ".projectdavid-instance-id").read_text(
+        encoding="utf-8"
+    ) == payload["instance_id"]
 
     assert target.read_text(encoding="utf-8") == secret
