@@ -113,7 +113,13 @@ try:
 
     _LICENSE_AVAILABLE = True
 except ImportError:
+    enforce_license = None
     _LICENSE_AVAILABLE = False
+
+# Q ships a deliberately frozen, first-party Project David runtime. The
+# standalone Q entrypoint opts into this private mode before invoking the CLI.
+# Normal projectdavid-platform installations must never enable it.
+_FIRST_PARTY_EMBEDDED_RUNTIME = False
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -122,6 +128,36 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 log = logging.getLogger(__name__)
+
+
+def _enable_first_party_embedded_runtime() -> None:
+    """Enable the private licence exemption used only by the Q-frozen runtime."""
+    global _FIRST_PARTY_EMBEDDED_RUNTIME
+    _FIRST_PARTY_EMBEDDED_RUNTIME = True
+
+
+def _enforce_runtime_license() -> bool:
+    """
+    Enforce the commercial Platform licence unless this is the first-party
+    embedded Q runtime.
+
+    Ordinary Platform installations fail closed if the validator itself is
+    unavailable. Q's special frozen executable deliberately excludes the
+    validator and opts into the embedded-runtime exemption from its entrypoint.
+    """
+    if _FIRST_PARTY_EMBEDDED_RUNTIME:
+        log.debug(
+            "Commercial licence enforcement disabled for first-party embedded runtime."
+        )
+        return True
+
+    if not _LICENSE_AVAILABLE or enforce_license is None:
+        log.error("Project David licence validator is unavailable; refusing startup.")
+        return False
+
+    enforce_license()
+    return True
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -611,10 +647,8 @@ class Orchestrator:
     def _preflight(self) -> bool:
         self.log.debug("Running preflight dependency checks...")
 
-        if _LICENSE_AVAILABLE:
-            enforce_license()
-        else:
-            self.log.debug("License validator not available — skipping.")
+        if not _enforce_runtime_license():
+            return False
 
         if not self._has_docker():
             return False
@@ -2057,26 +2091,115 @@ def cache_inspect(
     disk_usage: bool = typer.Option(
         False, "--disk-usage", "-u", help="Show disk usage per cached model."
     ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output for cache listing.",
+    ),
     verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
 ) -> None:
     """
-    Manage the HuggingFace model cache inside the inference worker container.
+    Manage the HuggingFace model cache used by the inference worker.
 
     Examples:\n
       pdavid cache --list\n
+      pdavid cache --list --json\n
       pdavid cache --download Qwen/Qwen2.5-VL-7B-Instruct-AWQ\n
       pdavid cache --delete Qwen/Qwen2.5-VL-3B-Instruct-AWQ\n
       pdavid cache --disk-usage\n
       pdavid cache --list --node inference_worker_2\n
     """
     args = SimpleNamespace(
-        verbose=verbose, training=False, ollama=False, vllm=False, gpu=False
+        verbose=verbose,
+        training=False,
+        ollama=False,
+        vllm=False,
+        gpu=False,
     )
     o = Orchestrator(args)
 
     if not any([list_cache, download, delete, disk_usage]):
         list_cache = True
 
+    if json_output and not list_cache:
+        typer.echo(
+            json.dumps(
+                {
+                    "status": "error",
+                    "error": "--json currently supports cache listing only",
+                }
+            )
+        )
+        raise SystemExit(2)
+
+    def _parse_cache_directory_name(cache_name: str) -> Optional[str]:
+        if not cache_name.startswith("models--"):
+            return None
+
+        encoded_model_id = cache_name[len("models--") :]
+        namespace, separator, model_name = encoded_model_id.partition("--")
+
+        if not separator or not namespace or not model_name:
+            return None
+
+        return f"{namespace}/{model_name}"
+
+    def _list_host_cached_models() -> list[dict]:
+        hf_cache_path = os.environ.get("HF_CACHE_PATH", "").strip()
+
+        if not hf_cache_path:
+            hf_cache_path = os.path.join(
+                os.path.expanduser("~"),
+                ".cache",
+                "huggingface",
+            )
+
+        hub_path = Path(hf_cache_path).expanduser().resolve() / "hub"
+
+        if not hub_path.exists() or not hub_path.is_dir():
+            return []
+
+        models: list[dict] = []
+
+        for entry in hub_path.iterdir():
+            if not entry.is_dir():
+                continue
+
+            hf_model_id = _parse_cache_directory_name(entry.name)
+
+            if hf_model_id is None:
+                continue
+
+            models.append(
+                {
+                    "hf_model_id": hf_model_id,
+                }
+            )
+
+        models.sort(key=lambda item: item["hf_model_id"].lower())
+        return models
+
+    # Machine-readable discovery is deliberately host-side.
+    # The HF cache is mounted into inference_worker, so the worker does not
+    # need to be running merely to discover locally available model weights.
+    if list_cache and json_output:
+        models = _list_host_cached_models()
+
+        typer.echo(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "node": node,
+                    "count": len(models),
+                    "models": models,
+                }
+            )
+        )
+
+        return
+
+    # Human-facing inspection and mutating cache operations still execute
+    # inside the inference worker.
     if not o._is_container_running(node):
         typer.echo(
             f"\n  [error] Container '{node}' is not running.\n"
@@ -2088,7 +2211,7 @@ def cache_inspect(
         )
         raise SystemExit(1)
 
-    def _exec(cmd: list) -> None:
+    def _exec(cmd: list) -> str:
         try:
             result = subprocess.run(  # nosec B602 B603 B607
                 ["docker", "exec", node] + cmd,
@@ -2097,15 +2220,30 @@ def cache_inspect(
                 capture_output=True,
                 shell=o.is_windows,
             )
-            typer.echo(result.stdout)
-            if result.stderr:
-                typer.echo(result.stderr, err=True)
+
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
+
+            if stdout:
+                typer.echo(stdout)
+
+            if stderr:
+                typer.echo(stderr, err=True)
+
+            return stdout
+
         except subprocess.CalledProcessError as e:
-            typer.echo(f"\n  [error] Command failed (code {e.returncode}).\n", err=True)
+            typer.echo(
+                f"\n  [error] Command failed (code {e.returncode}).\n",
+                err=True,
+            )
+
             if e.stdout:
                 typer.echo(e.stdout)
+
             if e.stderr:
                 typer.echo(e.stderr, err=True)
+
             raise SystemExit(1)
 
     if list_cache:
@@ -2117,12 +2255,16 @@ def cache_inspect(
         typer.echo(f"\n  Disk usage per model — {node}")
         typer.echo("=" * 60)
         _exec(["du", "-sh", "/root/.cache/huggingface/hub/"])
+
         typer.echo("\n  Per model:")
         _exec(
             [
                 "bash",
                 "-c",
-                "du -sh /root/.cache/huggingface/hub/models--* 2>/dev/null || echo '  (no models cached)'",
+                (
+                    "du -sh /root/.cache/huggingface/hub/models--* "
+                    "2>/dev/null || echo '  (no models cached)'"
+                ),
             ]
         )
 
@@ -2135,14 +2277,22 @@ def cache_inspect(
     if delete:
         cache_name = "models--" + delete.replace("/", "--")
         cache_path = f"/root/.cache/huggingface/hub/{cache_name}"
+
         typer.echo(f"\n  Deleting: {delete}")
         typer.echo(f"  Path    : {cache_path}")
         typer.echo("=" * 60)
-        confirmed = typer.confirm(f"  Remove {cache_name} from {node}?", default=False)
+
+        confirmed = typer.confirm(
+            f"  Remove {cache_name} from {node}?",
+            default=False,
+        )
+
         if not confirmed:
             typer.echo("  Aborted.")
             raise SystemExit(0)
+
         _exec(["rm", "-rf", cache_path])
+
         typer.echo(f"  Deleted. Run 'pdavid cache --list --node {node}' to verify.")
 
 
@@ -2263,10 +2413,15 @@ def ray_manage(
         help="Show GPU memory usage via nvidia-smi inside the inference worker.",
     ),
     dashboard: bool = typer.Option(
-        False, "--dashboard", help="Print the Ray dashboard URL."
+        False,
+        "--dashboard",
+        help="Print the Ray dashboard URL.",
     ),
     kill: Optional[str] = typer.Option(
-        None, "--kill", "-k", help="Tear down a specific Ray Serve deployment by name."
+        None,
+        "--kill",
+        "-k",
+        help="Tear down a specific Ray Serve deployment by name.",
     ),
     kill_all: bool = typer.Option(
         False,
@@ -2278,7 +2433,16 @@ def ray_manage(
         "--node",
         help="Container name to target. Defaults to inference_worker.",
     ),
-    verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON. Supported with --deployments.",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="Enable debug logging.",
+    ),
 ) -> None:
     """
     Inspect and manage the Ray cluster and Ray Serve deployments.
@@ -2286,32 +2450,78 @@ def ray_manage(
     Examples:\n
       pdavid ray --status\n
       pdavid ray --deployments\n
+      pdavid ray --deployments --json\n
       pdavid ray --gpu\n
       pdavid ray --dashboard\n
       pdavid ray --kill vllm_dep_WwY4uagFG1wDImm93xQ7qf\n
       pdavid ray --kill-all\n
       pdavid ray --status --node inference_worker_2\n
     """
+
+    if json_output and not deployments:
+        typer.echo(
+            json.dumps(
+                {
+                    "status": "error",
+                    "error": (
+                        "--json is currently supported only " "with --deployments"
+                    ),
+                }
+            )
+        )
+        raise SystemExit(2)
+
     args = SimpleNamespace(
-        verbose=verbose, training=False, ollama=False, vllm=False, gpu=False
+        verbose=verbose,
+        training=False,
+        ollama=False,
+        vllm=False,
+        gpu=False,
     )
+
     o = Orchestrator(args)
 
-    if not any([status, deployments, gpu, dashboard, kill, kill_all]):
+    if not any(
+        [
+            status,
+            deployments,
+            gpu,
+            dashboard,
+            kill,
+            kill_all,
+        ]
+    ):
         status = True
 
     if not o._is_container_running(node):
-        typer.echo(
-            f"\n  [error] Container '{node}' is not running.\n"
-            f"  Start the inference stack first:\n"
-            f"    pdavid --mode up --vllm\n"
-            f"  or the full training stack:\n"
-            f"    pdavid --mode up --training\n",
-            err=True,
-        )
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {
+                        "status": "error",
+                        "error": "container_not_running",
+                        "node": node,
+                        "applications": [],
+                    }
+                )
+            )
+        else:
+            typer.echo(
+                f"\n  [error] Container '{node}' is not running.\n"
+                f"  Start the inference stack first:\n"
+                f"    pdavid --mode up --vllm\n"
+                f"  or the full training stack:\n"
+                f"    pdavid --mode up --training\n",
+                err=True,
+            )
+
         raise SystemExit(1)
 
-    def _exec(cmd: list, check: bool = True) -> Optional[str]:
+    def _exec(
+        cmd: list,
+        check: bool = True,
+        echo_stdout: bool = True,
+    ) -> Optional[str]:
         try:
             result = subprocess.run(  # nosec B602 B603 B607
                 ["docker", "exec", node] + cmd,
@@ -2320,32 +2530,73 @@ def ray_manage(
                 capture_output=True,
                 shell=o.is_windows,
             )
-            if result.stdout:
-                typer.echo(result.stdout)
+
+            if result.stdout and echo_stdout:
+                typer.echo(
+                    result.stdout,
+                    nl=False,
+                )
+
             if result.stderr:
-                typer.echo(result.stderr, err=True)
+                typer.echo(
+                    result.stderr,
+                    err=True,
+                    nl=False,
+                )
+
             return result.stdout
+
         except subprocess.CalledProcessError as e:
-            typer.echo(f"\n  [error] Command failed (code {e.returncode}).\n", err=True)
-            if e.stdout:
-                typer.echo(e.stdout)
+            if json_output:
+                typer.echo(
+                    json.dumps(
+                        {
+                            "status": "error",
+                            "error": "command_failed",
+                            "returncode": e.returncode,
+                            "node": node,
+                        }
+                    )
+                )
+            else:
+                typer.echo(
+                    f"\n  [error] Command failed " f"(code {e.returncode}).\n",
+                    err=True,
+                )
+
+                if e.stdout:
+                    typer.echo(
+                        e.stdout,
+                        nl=False,
+                    )
+
             if e.stderr:
-                typer.echo(e.stderr, err=True)
+                typer.echo(
+                    e.stderr,
+                    err=True,
+                    nl=False,
+                )
+
             raise SystemExit(1)
 
     if dashboard:
         typer.echo("\n  Ray dashboard: http://localhost:80/ray/")
-        typer.echo("  Cluster nodes, GPU resources, and active Serve deployments.\n")
+        typer.echo("  Cluster nodes, GPU resources, " "and active Serve deployments.\n")
 
     if status:
         typer.echo(f"\n  Ray cluster status — {node}")
         typer.echo("=" * 60)
+
         _exec(
             [
                 "python3",
                 "-c",
                 (
-                    "import ray; ray.init(address='auto', ignore_reinit_error=True); "
+                    "import ray; "
+                    "ray.init("
+                    "address='auto', "
+                    "ignore_reinit_error=True"
+                    "); "
                     "print(ray.cluster_resources()); "
                     "print(ray.available_resources())"
                 ),
@@ -2353,31 +2604,128 @@ def ray_manage(
         )
 
     if deployments:
-        typer.echo(f"\n  Ray Serve deployments — {node}")
-        typer.echo("=" * 60)
-        _exec(
-            [
-                "python3",
-                "-c",
-                (
-                    "from ray import serve; "
-                    "import ray; ray.init(address='auto', ignore_reinit_error=True); "
-                    "serve.start(detached=True); "
-                    "status = serve.status(); "
-                    "[print(f'  {name:<45} {app.status}') "
-                    " for name, app in status.applications.items()] "
-                    "if status.applications else print('  No active deployments.')"
-                ),
-            ]
-        )
+        if json_output:
+            raw_output = _exec(
+                [
+                    "python3",
+                    "-c",
+                    (
+                        "import json; "
+                        "import ray; "
+                        "from ray import serve; "
+                        "ray.init("
+                        "address='auto', "
+                        "ignore_reinit_error=True"
+                        "); "
+                        "serve.start(detached=True); "
+                        "ray_status = serve.status(); "
+                        "applications = []; "
+                        "\nfor name, app in "
+                        "ray_status.applications.items():"
+                        "\n    deployment_id = "
+                        "name[5:] if "
+                        "name.startswith('vllm_dep_') "
+                        "else None"
+                        "\n    applications.append({"
+                        "'name': name, "
+                        "'deployment_id': deployment_id, "
+                        "'status': str(app.status), "
+                        "'message': "
+                        "getattr(app, 'message', None), "
+                        "'route_prefix': "
+                        "getattr(app, 'route_prefix', None)"
+                        "})"
+                        "\nprint(json.dumps({"
+                        "'status': 'ok', "
+                        "'node': " + repr(node) + ", "
+                        "'applications': applications"
+                        "}, separators=(',', ':')))"
+                    ),
+                ],
+                echo_stdout=False,
+            )
+
+            payload = raw_output.strip() if raw_output else ""
+
+            if not payload:
+                typer.echo(
+                    json.dumps(
+                        {
+                            "status": "error",
+                            "error": "empty_ray_response",
+                            "node": node,
+                            "applications": [],
+                        }
+                    )
+                )
+                raise SystemExit(1)
+
+            try:
+                parsed = json.loads(payload)
+            except json.JSONDecodeError:
+                typer.echo(
+                    json.dumps(
+                        {
+                            "status": "error",
+                            "error": "invalid_ray_response",
+                            "node": node,
+                            "applications": [],
+                        }
+                    )
+                )
+                raise SystemExit(1)
+
+            typer.echo(
+                json.dumps(
+                    parsed,
+                    separators=(",", ":"),
+                )
+            )
+
+        else:
+            typer.echo(f"\n  Ray Serve deployments — {node}")
+            typer.echo("=" * 60)
+
+            _exec(
+                [
+                    "python3",
+                    "-c",
+                    (
+                        "from ray import serve; "
+                        "import ray; "
+                        "ray.init("
+                        "address='auto', "
+                        "ignore_reinit_error=True"
+                        "); "
+                        "serve.start(detached=True); "
+                        "status = serve.status(); "
+                        "[print("
+                        "f'  {name:<45} {app.status}'"
+                        ") for name, app in "
+                        "status.applications.items()] "
+                        "if status.applications "
+                        "else print("
+                        "'  No active deployments.'"
+                        ")"
+                    ),
+                ]
+            )
 
     if gpu:
         typer.echo(f"\n  GPU memory usage — {node}")
         typer.echo("=" * 60)
+
         _exec(
             [
                 "nvidia-smi",
-                "--query-gpu=name,memory.used,memory.free,memory.total,utilization.gpu",
+                (
+                    "--query-gpu="
+                    "name,"
+                    "memory.used,"
+                    "memory.free,"
+                    "memory.total,"
+                    "utilization.gpu"
+                ),
                 "--format=csv,noheader,nounits",
             ]
         )
@@ -2385,53 +2733,83 @@ def ray_manage(
     if kill:
         typer.echo(f"\n  Killing deployment: {kill}")
         typer.echo("=" * 60)
+
         confirmed = typer.confirm(
-            f"  This will tear down '{kill}' and free its GPU memory. Proceed?",
+            f"  This will tear down '{kill}' " "and free its GPU memory. Proceed?",
             default=False,
         )
-        if not confirmed:
-            typer.echo("  Aborted.")
-            raise SystemExit(0)
-        _exec(
-            [
-                "python3",
-                "-c",
-                (
-                    f"import ray; ray.init(address='auto', ignore_reinit_error=True); "
-                    f"from ray import serve; "
-                    f"serve.start(detached=True); "
-                    f"serve.delete('{kill}'); "
-                    f"print('  Deployment {kill} deleted. GPU memory released.')"
-                ),
-            ]
-        )
-        typer.echo("\n  Run 'pdavid ray --deployments' to confirm.")
 
-    if kill_all:
-        typer.echo("\n  This will tear down ALL active Ray Serve deployments.")
-        typer.echo("  All GPU memory will be released.")
-        typer.echo("=" * 60)
-        confirmed = typer.confirm("  Proceed?", default=False)
         if not confirmed:
             typer.echo("  Aborted.")
             raise SystemExit(0)
+
         _exec(
             [
                 "python3",
                 "-c",
                 (
-                    "import ray; ray.init(address='auto', ignore_reinit_error=True); "
+                    "import ray; "
+                    "ray.init("
+                    "address='auto', "
+                    "ignore_reinit_error=True"
+                    "); "
                     "from ray import serve; "
                     "serve.start(detached=True); "
-                    "apps = serve.status().applications; "
-                    "[serve.delete(name) for name in apps]; "
-                    "print(f'  Deleted {len(apps)} deployment(s). GPU memory released.')"
-                    " if apps else print('  No active deployments to remove.')"
+                    f"serve.delete({kill!r}); "
+                    f"print("
+                    f"'  Deployment {kill} deleted. "
+                    f"GPU memory released.'"
+                    f")"
                 ),
             ]
         )
+
+        typer.echo("\n  Run 'pdavid ray --deployments' " "to confirm.")
+
+    if kill_all:
+        typer.echo("\n  This will tear down ALL active " "Ray Serve deployments.")
+        typer.echo("  All GPU memory will be released.")
+        typer.echo("=" * 60)
+
+        confirmed = typer.confirm(
+            "  Proceed?",
+            default=False,
+        )
+
+        if not confirmed:
+            typer.echo("  Aborted.")
+            raise SystemExit(0)
+
+        _exec(
+            [
+                "python3",
+                "-c",
+                (
+                    "import ray; "
+                    "ray.init("
+                    "address='auto', "
+                    "ignore_reinit_error=True"
+                    "); "
+                    "from ray import serve; "
+                    "serve.start(detached=True); "
+                    "apps = "
+                    "serve.status().applications; "
+                    "[serve.delete(name) "
+                    "for name in apps]; "
+                    "print("
+                    "f'  Deleted {len(apps)} "
+                    "deployment(s). "
+                    "GPU memory released.'"
+                    ") if apps else print("
+                    "'  No active deployments "
+                    "to remove.'"
+                    ")"
+                ),
+            ]
+        )
+
         typer.echo(
-            "\n  Run 'pdavid db --nuke-deployments' to also clear the DB records."
+            "\n  Run " "'pdavid db --nuke-deployments' " "to also clear the DB records."
         )
 
 
