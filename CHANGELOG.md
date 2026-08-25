@@ -1,3 +1,10 @@
+# [1.46.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.45.0...v1.46.0) (2026-08-25)
+
+
+### Features
+
+* add stable Project David runtime instance identity ([7f20cf4](https://github.com/project-david-ai/projectdavid-platform/commit/7f20cf409b56a0d461188f491e9a270c446d12e4))
+
 # [1.45.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.44.3...v1.45.0) (2026-08-23)
 
 
