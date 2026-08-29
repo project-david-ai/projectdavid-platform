@@ -2249,7 +2249,7 @@ def cache_inspect(
     if list_cache:
         typer.echo(f"\n  HuggingFace cache — {node}")
         typer.echo("=" * 60)
-        _exec(["huggingface-cli", "scan-cache"])
+        _exec(["hf", "cache", "ls"])
 
     if disk_usage:
         typer.echo(f"\n  Disk usage per model — {node}")
@@ -2271,7 +2271,7 @@ def cache_inspect(
     if download:
         typer.echo(f"\n  Downloading: {download}")
         typer.echo("=" * 60)
-        _exec(["huggingface-cli", "download", download])
+        _exec(["hf", "download", download])
         typer.echo(f"\n  Done. Run 'pdavid cache --list --node {node}' to verify.")
 
     if delete:
