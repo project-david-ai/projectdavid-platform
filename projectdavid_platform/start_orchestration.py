@@ -466,6 +466,7 @@ class Orchestrator:
         self.args = args
         self.is_windows = _platform.system() == "Windows"
         self.log = log
+        self.progress_json = bool(getattr(args, "progress_json", False))
 
         if getattr(self.args, "verbose", False):
             self.log.setLevel(logging.DEBUG)
@@ -703,6 +704,21 @@ class Orchestrator:
             files += ["--profile", "training"]
 
         return files
+
+    def _emit_progress(self, stage: str) -> None:
+        if not self.progress_json:
+            return
+
+        typer.echo(
+            "Q_PROGRESS "
+            + json.dumps(
+                {
+                    "type": "progress",
+                    "stage": stage,
+                },
+                separators=(",", ":"),
+            )
+        )
 
     def _get_all_services(self) -> List[str]:
         if not self.compose_config:
@@ -1259,6 +1275,7 @@ class Orchestrator:
         return user, password, database
 
     def _handle_up(self):
+        self._emit_progress("validating")
         load_dotenv(dotenv_path=self._ENV_FILE, override=True)
         self._validate_secrets()
         self._check_version_upgrade()
@@ -1293,7 +1310,9 @@ class Orchestrator:
             up_cmd.extend(target)
 
         try:
+            self._emit_progress("containers_starting")
             self._run_command(up_cmd, check=True)
+            self._emit_progress("service_booting")
             self.log.info("Stack started successfully.")
         except subprocess.CalledProcessError:
             raise SystemExit(1)
@@ -1813,6 +1832,12 @@ def main(
         False, "--no-log-prefix", help="Omit service name prefix in logs."
     ),
     verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
+    progress_json: bool = typer.Option(
+        False,
+        "--progress-json",
+        help="Emit machine-readable lifecycle progress events.",
+        hidden=True,
+    ),
 ) -> None:
     """Manage the Project David / Entities platform stack."""
     _activate_runtime_directory(runtime_dir)
@@ -1853,6 +1878,7 @@ def main(
         timestamps=timestamps,
         no_log_prefix=no_log_prefix,
         verbose=verbose,
+        progress_json=progress_json,
     )
 
     try:
