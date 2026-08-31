@@ -1,6 +1,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 
 def parse_progress(output):
     prefix = "Q_PROGRESS "
@@ -43,6 +45,11 @@ def test_up_emits_machine_readable_progress_in_order(
 
     monkeypatch.setattr(
         orchestrator,
+        "_preflight",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        orchestrator,
         "_validate_secrets",
         lambda: None,
     )
@@ -62,7 +69,7 @@ def test_up_emits_machine_readable_progress_in_order(
         lambda *args, **kwargs: None,
     )
 
-    orchestrator._handle_up()
+    orchestrator.run()
 
     events = parse_progress(
         capsys.readouterr().out,
@@ -80,5 +87,39 @@ def test_up_emits_machine_readable_progress_in_order(
         {
             "type": "progress",
             "stage": "service_booting",
+        },
+    ]
+
+
+def test_startup_preflight_failure_still_emits_validating(
+    base_args,
+    make_orchestrator,
+    monkeypatch,
+    capsys,
+):
+    args = SimpleNamespace(
+        **vars(base_args),
+        progress_json=True,
+    )
+
+    orchestrator = make_orchestrator(args)
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_preflight",
+        lambda: False,
+    )
+
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit):
+        orchestrator.run()
+
+    assert parse_progress(
+        capsys.readouterr().out,
+    ) == [
+        {
+            "type": "progress",
+            "stage": "validating",
         },
     ]

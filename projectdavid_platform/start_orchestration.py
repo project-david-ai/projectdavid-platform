@@ -1275,7 +1275,6 @@ class Orchestrator:
         return user, password, database
 
     def _handle_up(self):
-        self._emit_progress("validating")
         load_dotenv(dotenv_path=self._ENV_FILE, override=True)
         self._validate_secrets()
         self._check_version_upgrade()
@@ -1560,6 +1559,9 @@ class Orchestrator:
                 raise SystemExit(1)
             self._handle_nuke()
             return
+
+        if mode in ("up", "both"):
+            self._emit_progress("validating")
 
         if not self._preflight():
             raise SystemExit(1)
