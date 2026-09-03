@@ -306,6 +306,9 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - PYTHONUNBUFFERED=1
       - RAY_IGNORE_VERSION_MISMATCH=1
+      # Safe compatibility default. vLLM V2 requires UVA support that is not
+      # universally available through Docker/WSL GPU runtimes.
+      - VLLM_USE_V2_MODEL_RUNNER=${VLLM_USE_V2_MODEL_RUNNER:-0}
       # Tailscale cluster networking (opt-in).
       # Set NODE_IP in .env to this machine's Tailscale IP to advertise
       # it to the Ray cluster for bidirectional worker node communication.
