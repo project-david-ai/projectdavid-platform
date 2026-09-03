@@ -12,6 +12,7 @@ import shutil
 import socket as _socket
 import subprocess  # nosec B404
 import sys
+import threading  # nosec B404
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -243,7 +244,11 @@ app = typer.Typer(
 )
 
 
-def _activate_runtime_directory(runtime_dir: Optional[Path]) -> Path:
+def _activate_runtime_directory(
+    runtime_dir: Optional[Path],
+    *,
+    managed_runtime: bool = False,
+) -> Path:
     """
     Activate the Project David runtime instance for this CLI process.
 
@@ -269,10 +274,20 @@ def _activate_runtime_directory(runtime_dir: Optional[Path]) -> Path:
         resolved = Path(configured).expanduser().resolve()
 
     if not resolved.exists():
-        raise typer.BadParameter(
-            f"Project David runtime directory does not exist: {resolved}",
-            param_hint="--runtime-dir",
-        )
+        if managed_runtime:
+            resolved.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            log.info(
+                "Created managed Project David runtime directory: %s",
+                resolved,
+            )
+        else:
+            raise typer.BadParameter(
+                f"Project David runtime directory does not exist: {resolved}",
+                param_hint="--runtime-dir",
+            )
 
     if not resolved.is_dir():
         raise typer.BadParameter(
@@ -467,6 +482,7 @@ class Orchestrator:
         self.is_windows = _platform.system() == "Windows"
         self.log = log
         self.progress_json = bool(getattr(args, "progress_json", False))
+        self.managed_runtime = bool(getattr(args, "managed_runtime", False))
 
         if getattr(self.args, "verbose", False):
             self.log.setLevel(logging.DEBUG)
@@ -554,7 +570,7 @@ class Orchestrator:
                     )
                     continue
 
-            if dest.exists():
+            if dest.exists() and not self.managed_runtime:
                 self.log.debug("Config file already present — skipping: %s", cwd_rel)
                 continue
 
@@ -578,7 +594,7 @@ class Orchestrator:
                     e,
                 )
 
-        if copied:
+        if copied and not self.managed_runtime:
             typer.echo(
                 f"\n  Installed {len(copied)} file(s) to CWD:\n"
                 + "\n".join(f"    {f}" for f in copied)
@@ -591,6 +607,10 @@ class Orchestrator:
         system = _platform.system().lower()
         install_url = _DOCKER_INSTALL_URLS.get(
             system, "https://docs.docker.com/get-docker/"
+        )
+        self._emit_error(
+            "DOCKER_UNAVAILABLE",
+            "Docker is not available.",
         )
         typer.echo(
             f"\nDocker is not installed or not found in PATH.\n"
@@ -610,6 +630,10 @@ class Orchestrator:
             )
             return True
         except (subprocess.CalledProcessError, FileNotFoundError):
+            self._emit_error(
+                "DOCKER_COMPOSE_UNAVAILABLE",
+                "Docker Compose is not available.",
+            )
             typer.echo(
                 f"\nThe Docker Compose plugin is not available.\n"
                 f"Install it: {_DOCKER_COMPOSE_INSTALL_URL}\n"
@@ -634,6 +658,10 @@ class Orchestrator:
         if self._has_nvidia_support():
             self.log.info("NVIDIA GPU support confirmed.")
             return True
+        self._emit_error(
+            "GPU_UNAVAILABLE",
+            "A compatible NVIDIA GPU is required.",
+        )
         typer.echo(
             f"\nGPU service requested ({flag}) but NVIDIA drivers / nvidia-smi not found.\n"
             "Requirements:\n"
@@ -649,6 +677,10 @@ class Orchestrator:
         self.log.debug("Running preflight dependency checks...")
 
         if not _enforce_runtime_license():
+            self._emit_error(
+                "LICENSE_INVALID",
+                "Project David runtime validation failed.",
+            )
             return False
 
         if not self._has_docker():
@@ -697,6 +729,18 @@ class Orchestrator:
         if getattr(self.args, "ollama", False):
             files += ["-f", self.ollama_compose]
 
+        release_override = getattr(
+            self.args,
+            "release_override",
+            None,
+        )
+
+        if release_override:
+            files += [
+                "-f",
+                str(release_override),
+            ]
+
         if getattr(self.args, "vllm", False):
             files += ["--profile", "vllm"]
 
@@ -705,25 +749,378 @@ class Orchestrator:
 
         return files
 
-    def _emit_progress(self, stage: str) -> None:
+    def _emit_progress(
+        self,
+        stage: str,
+        **details: object,
+    ) -> None:
         if not self.progress_json:
             return
+
+        payload = {
+            "type": "progress",
+            "stage": stage,
+        }
+
+        payload.update(
+            {key: value for key, value in details.items() if value is not None}
+        )
 
         typer.echo(
             "Q_PROGRESS "
             + json.dumps(
-                {
-                    "type": "progress",
-                    "stage": stage,
-                },
+                payload,
                 separators=(",", ":"),
             )
         )
+
+    def _emit_error(self, code: str, message: str) -> None:
+        if not self.progress_json:
+            return
+
+        typer.echo(
+            "Q_ERROR "
+            + json.dumps(
+                {
+                    "type": "error",
+                    "code": code,
+                    "message": message,
+                },
+                separators=(",", ":"),
+            ),
+            err=True,
+        )
+
+    def _get_required_images(self) -> List[str]:
+        result = self._run_command(
+            ["docker", "compose"] + self._compose_files() + ["config", "--images"],
+            check=True,
+            capture_output=True,
+            suppress_logs=True,
+        )
+
+        return sorted(
+            {
+                line.strip()
+                for line in (result.stdout or "").splitlines()
+                if line.strip()
+            }
+        )
+
+    def _get_missing_images(self, images: List[str]) -> List[str]:
+        missing = []
+        total = len(images)
+
+        if total:
+            self._emit_progress(
+                "images_checking",
+                current=0,
+                total=total,
+            )
+
+        for index, image in enumerate(
+            images,
+            start=1,
+        ):
+            result = self._run_command(
+                ["docker", "image", "inspect", image],
+                check=False,
+                capture_output=True,
+                suppress_logs=True,
+            )
+
+            if result.returncode != 0:
+                missing.append(image)
+
+            self._emit_progress(
+                "images_checking",
+                current=index,
+                total=total,
+                item=image,
+            )
+
+        return missing
+
+    def _prepare_required_images(self) -> None:
+        if getattr(
+            self.args,
+            "release_override",
+            None,
+        ):
+            # Q has already inspected, pulled, and verified every
+            # planner-requested immutable digest before invoking Platform.
+            return
+
+        if not self.progress_json:
+            return
+
+        self._emit_progress("images_checking")
+
+        images = self._get_required_images()
+        missing = self._get_missing_images(images)
+
+        if not missing:
+            return
+
+        self._emit_progress(
+            "image_missing",
+            total=len(missing),
+        )
+
+        total = len(missing)
+
+        for index, image in enumerate(
+            missing,
+            start=1,
+        ):
+            self._emit_progress(
+                "image_downloading",
+                current=index - 1,
+                total=total,
+                item=image,
+            )
+
+            self._run_command(
+                ["docker", "pull", image],
+                check=True,
+            )
+
+            self._emit_progress(
+                "image_downloading",
+                current=index,
+                total=total,
+                item=image,
+            )
 
     def _get_all_services(self) -> List[str]:
         if not self.compose_config:
             return []
         return list(self.compose_config.get("services", {}).keys())
+
+    def _get_active_services(
+        self,
+        target: List[str],
+    ) -> List[str]:
+        if target:
+            return list(dict.fromkeys(target))
+
+        try:
+            result = self._run_command(
+                ["docker", "compose"]
+                + self._compose_files()
+                + [
+                    "config",
+                    "--services",
+                ],
+                check=True,
+                capture_output=True,
+                suppress_logs=True,
+            )
+        except Exception:
+            # Progress discovery must never make
+            # stack startup fail.
+            return []
+
+        if result is None:
+            return []
+
+        stdout = (
+            getattr(
+                result,
+                "stdout",
+                "",
+            )
+            or ""
+        )
+
+        return list(
+            dict.fromkeys(line.strip() for line in stdout.splitlines() if line.strip())
+        )
+
+    def _get_running_services(self) -> List[str]:
+        result = self._run_command(
+            ["docker", "compose"]
+            + self._compose_files()
+            + [
+                "ps",
+                "--status",
+                "running",
+                "--services",
+            ],
+            check=False,
+            capture_output=True,
+            suppress_logs=True,
+        )
+
+        if result.returncode != 0:
+            return []
+
+        return [
+            line.strip() for line in (result.stdout or "").splitlines() if line.strip()
+        ]
+
+    def _emit_service_start_progress(
+        self,
+        services: List[str],
+        previous_running=None,
+    ):
+        service_set = set(services)
+
+        running = [
+            service
+            for service in self._get_running_services()
+            if service in service_set
+        ]
+
+        running_set = set(running)
+
+        previous = set(previous_running) if previous_running else set()
+
+        newly_running = [service for service in running if service not in previous]
+
+        self._emit_progress(
+            "containers_starting",
+            current=len(running_set),
+            total=len(services),
+            item=(newly_running[-1] if newly_running else None),
+        )
+
+        return running_set
+
+    def _run_compose_up_with_progress(
+        self,
+        up_cmd,
+        target: List[str],
+    ):
+        if not getattr(
+            self,
+            "progress_json",
+            False,
+        ):
+            self._emit_progress(
+                "containers_starting",
+            )
+
+            return self._run_command(
+                up_cmd,
+                check=True,
+            )
+
+        services = self._get_active_services(
+            target,
+        )
+
+        if not services:
+            self._emit_progress(
+                "containers_starting",
+            )
+
+            return self._run_command(
+                up_cmd,
+                check=True,
+            )
+
+        self._emit_progress(
+            "containers_starting",
+            current=0,
+            total=len(services),
+        )
+
+        stop_event = threading.Event()
+
+        previous_running = set()
+
+        def monitor():
+            nonlocal previous_running
+
+            while not stop_event.is_set():
+                try:
+                    running = set(
+                        service
+                        for service in self._get_running_services()
+                        if service in set(services)
+                    )
+
+                    if running != previous_running:
+                        newly_running = [
+                            service
+                            for service in services
+                            if (service in running and service not in previous_running)
+                        ]
+
+                        self._emit_progress(
+                            "containers_starting",
+                            current=len(running),
+                            total=len(services),
+                            item=(newly_running[-1] if newly_running else None),
+                        )
+
+                        previous_running = running
+
+                except Exception as exc:
+                    # Progress telemetry must never
+                    # make stack startup fail.
+                    self.log.debug(
+                        "Service progress inspection failed: %s",
+                        exc,
+                    )
+
+                stop_event.wait(
+                    0.35,
+                )
+
+        monitor_thread = threading.Thread(
+            target=monitor,
+            name="pdavid-q-progress",
+            daemon=True,
+        )
+
+        monitor_thread.start()
+
+        try:
+            result = self._run_command(
+                up_cmd,
+                check=True,
+            )
+        finally:
+            stop_event.set()
+
+            monitor_thread.join(
+                timeout=2,
+            )
+
+        try:
+            final_running = set(
+                service
+                for service in self._get_running_services()
+                if service in set(services)
+            )
+
+            if final_running != previous_running:
+                newly_running = [
+                    service
+                    for service in services
+                    if (service in final_running and service not in previous_running)
+                ]
+
+                self._emit_progress(
+                    "containers_starting",
+                    current=len(
+                        final_running,
+                    ),
+                    total=len(services),
+                    item=(newly_running[-1] if newly_running else None),
+                )
+
+        except Exception as exc:
+            # Startup already succeeded; a telemetry
+            # inspection failure is non-fatal.
+            self.log.debug(
+                "Final service progress inspection failed: %s",
+                exc,
+            )
+
+        return result
 
     def _run_command(
         self,
@@ -922,7 +1319,16 @@ class Orchestrator:
                 "Package not found — defaulting to latest"
             )
 
-        self._prompt_user_required(env_values, generation_log)
+        if self.managed_runtime:
+            self.log.info(
+                "Managed runtime bootstrap: optional user configuration "
+                "will not be inherited from the shell."
+            )
+        else:
+            self._prompt_user_required(
+                env_values,
+                generation_log,
+            )
 
         env_lines = [
             f"# Auto-generated by projectdavid-platform — {time.strftime('%Y-%m-%d %H:%M:%S %Z')}",
@@ -988,12 +1394,42 @@ class Orchestrator:
         )
 
     def _check_for_required_env_file(self):
+        env_path = Path(self._ENV_FILE)
+        runtime_identity_path = Path(".projectdavid-instance-id")
+
+        if not env_path.exists() and runtime_identity_path.is_file():
+            message = (
+                "Existing Project David runtime identity was found, "
+                "but .env is missing. Refusing to generate replacement "
+                "secrets because persistent runtime state may depend on "
+                "the original credentials. Credential/configuration "
+                "recovery is required."
+            )
+
+            self._emit_error(
+                "ENV_RECOVERY_REQUIRED",
+                message,
+            )
+            self.log.error(message)
+
+            raise SystemExit(1)
+
         if not os.path.exists(self._ENV_FILE):
-            self.log.warning("'%s' not found — generating...", self._ENV_FILE)
+            self.log.warning(
+                "'%s' not found - generating...",
+                self._ENV_FILE,
+            )
             self._generate_dot_env_file()
         else:
-            self.log.info("'%s' exists — loading.", self._ENV_FILE)
-            load_dotenv(dotenv_path=self._ENV_FILE, override=True)
+            self.log.info(
+                "'%s' exists - loading.",
+                self._ENV_FILE,
+            )
+
+        load_dotenv(
+            dotenv_path=self._ENV_FILE,
+            override=True,
+        )
 
     def _configure_shared_path(self):
         system = _platform.system().lower()
@@ -1097,6 +1533,59 @@ class Orchestrator:
         )
         return ray_address
 
+    def _compose_owns_host_port(self, port: int) -> bool:
+        try:
+            compose_result = self._run_command(
+                ["docker", "compose"] + self._compose_files() + ["ps", "-q"],
+                check=False,
+                capture_output=True,
+                suppress_logs=True,
+            )
+
+            if compose_result.returncode != 0:
+                return False
+
+            compose_container_ids = {
+                line.strip()
+                for line in (compose_result.stdout or "").splitlines()
+                if line.strip()
+            }
+
+            if not compose_container_ids:
+                return False
+
+            published_result = self._run_command(
+                [
+                    "docker",
+                    "ps",
+                    "--filter",
+                    f"publish={port}",
+                    "--format",
+                    "{{.ID}}",
+                ],
+                check=False,
+                capture_output=True,
+                suppress_logs=True,
+            )
+
+            if published_result.returncode != 0:
+                return False
+
+            published_container_ids = {
+                line.strip()
+                for line in (published_result.stdout or "").splitlines()
+                if line.strip()
+            }
+
+            return any(
+                compose_id.startswith(published_id)
+                or published_id.startswith(compose_id)
+                for compose_id in compose_container_ids
+                for published_id in published_container_ids
+            )
+        except Exception:
+            return False
+
     def _check_port_conflicts(self, ports: dict) -> bool:
         blocked = []
         warned = []
@@ -1110,6 +1599,16 @@ class Orchestrator:
                 in_use = False
 
             if in_use:
+                if self._compose_owns_host_port(port):
+                    self.log.info(
+                        "Port %s (%s) is already owned by this "
+                        "Project David runtime; existing infrastructure "
+                        "will be reconciled.",
+                        port,
+                        label,
+                    )
+                    continue
+
                 if level == "warn":
                     warned.append((port, label))
                 else:
@@ -1123,6 +1622,10 @@ class Orchestrator:
             )
 
         if blocked:
+            self._emit_error(
+                "PORT_CONFLICT",
+                "Required local ports are already in use.",
+            )
             typer.echo("\n" + "=" * 60, err=True)
             typer.echo("  Port conflict — startup blocked", err=True)
             typer.echo("=" * 60, err=True)
@@ -1277,7 +1780,32 @@ class Orchestrator:
     def _handle_up(self):
         load_dotenv(dotenv_path=self._ENV_FILE, override=True)
         self._validate_secrets()
-        self._check_version_upgrade()
+
+        release_override = getattr(
+            self.args,
+            "release_override",
+            None,
+        )
+
+        if release_override and getattr(
+            self.args,
+            "pull",
+            False,
+        ):
+            self._emit_error(
+                "RELEASE_OVERRIDE_PULL_CONFLICT",
+                ("A prepared release override cannot be combined " "with --pull."),
+            )
+
+            typer.echo(
+                ("[error] --release-override cannot be combined " "with --pull."),
+                err=True,
+            )
+
+            raise SystemExit(1)
+
+        if not release_override:
+            self._check_version_upgrade()
 
         up_cmd = ["docker", "compose"] + self._compose_files() + ["up"]
         if not getattr(self.args, "attached", False):
@@ -1309,9 +1837,15 @@ class Orchestrator:
             up_cmd.extend(target)
 
         try:
-            self._emit_progress("containers_starting")
-            self._run_command(up_cmd, check=True)
-            self._emit_progress("service_booting")
+            self._run_compose_up_with_progress(
+                up_cmd,
+                target,
+            )
+
+            self._emit_progress(
+                "service_booting",
+            )
+
             self.log.info("Stack started successfully.")
         except subprocess.CalledProcessError:
             raise SystemExit(1)
@@ -1566,6 +2100,9 @@ class Orchestrator:
         if not self._preflight():
             raise SystemExit(1)
 
+        if mode in ("up", "both"):
+            self._prepare_required_images()
+
         if mode == "logs":
             self._handle_logs()
             return
@@ -1771,6 +2308,15 @@ def main(
             "Defaults to PDAVID_RUNTIME_HOME or the current working directory."
         ),
     ),
+    release_override: Optional[Path] = typer.Option(
+        None,
+        "--release-override",
+        help=(
+            "Absolute path to a Q-prepared Compose release override. "
+            "Images must already be present locally. "
+            "Cannot be combined with --pull."
+        ),
+    ),
     mode: str = typer.Option(
         "up",
         "--mode",
@@ -1840,9 +2386,18 @@ def main(
         help="Emit machine-readable lifecycle progress events.",
         hidden=True,
     ),
+    managed_runtime: bool = typer.Option(
+        False,
+        "--managed-runtime",
+        help="Refresh Platform-owned runtime configuration.",
+        hidden=True,
+    ),
 ) -> None:
     """Manage the Project David / Entities platform stack."""
-    _activate_runtime_directory(runtime_dir)
+    _activate_runtime_directory(
+        runtime_dir,
+        managed_runtime=managed_runtime,
+    )
 
     if ctx.invoked_subcommand is not None:
         return
@@ -1854,6 +2409,38 @@ def main(
             err=True,
         )
         raise SystemExit(1)
+
+    if release_override is not None:
+        if mode not in {"up", "both"}:
+            raise typer.BadParameter(
+                ("--release-override is only valid with " "--mode up or --mode both"),
+                param_hint="--release-override",
+            )
+
+        if pull:
+            raise typer.BadParameter(
+                "--release-override cannot be combined with --pull",
+                param_hint="--release-override",
+            )
+
+        release_override = release_override.expanduser()
+
+        if not release_override.is_absolute():
+            raise typer.BadParameter(
+                "--release-override must be an absolute path",
+                param_hint="--release-override",
+            )
+
+        release_override = release_override.resolve()
+
+        if not release_override.is_file():
+            raise typer.BadParameter(
+                (
+                    "Prepared release override does not exist "
+                    f"or is not a file: {release_override}"
+                ),
+                param_hint="--release-override",
+            )
 
     if clear_volumes:
         down = True
@@ -1870,6 +2457,7 @@ def main(
         clear_volumes=clear_volumes,
         force_recreate=force_recreate,
         pull=pull,
+        release_override=release_override,
         attached=attached,
         build_before_up=build_before_up,
         no_cache=no_cache,
@@ -1881,6 +2469,7 @@ def main(
         no_log_prefix=no_log_prefix,
         verbose=verbose,
         progress_json=progress_json,
+        managed_runtime=managed_runtime,
     )
 
     try:
