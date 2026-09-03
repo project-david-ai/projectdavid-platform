@@ -16,7 +16,7 @@ import threading  # nosec B404
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List, Optional
+from typing import Callable, List, Optional
 from urllib.parse import quote_plus
 
 import typer
@@ -110,8 +110,11 @@ except ImportError:
 # License validator import
 # ---------------------------------------------------------------------------
 try:
-    from projectdavid_platform.license_validator import enforce_license
+    from projectdavid_platform.license_validator import (
+        enforce_license as _enforce_license,
+    )
 
+    enforce_license: Callable[[], None] | None = _enforce_license
     _LICENSE_AVAILABLE = True
 except ImportError:
     enforce_license = None
@@ -757,7 +760,7 @@ class Orchestrator:
         if not self.progress_json:
             return
 
-        payload = {
+        payload: dict[str, object] = {
             "type": "progress",
             "stage": stage,
         }
@@ -1028,7 +1031,7 @@ class Orchestrator:
 
         stop_event = threading.Event()
 
-        previous_running = set()
+        previous_running: set[str] = set()
 
         def monitor():
             nonlocal previous_running
