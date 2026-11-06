@@ -1,3 +1,10 @@
+## [1.47.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.47.0...v1.47.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **packaging:** release updated core image references ([bcef8ac](https://github.com/project-david-ai/projectdavid-platform/commit/bcef8acf07094f31a7197ab5d5fdbfea5df65099))
+
 # [1.47.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.46.0...v1.47.0) (2026-09-09)
 
 
