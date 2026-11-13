@@ -1431,10 +1431,17 @@ class Orchestrator:
                 replacement = expected_default
             else:
                 current_value = current_values[key]
-                replacement = replacements.get(current_value)
-                if replacement is None:
+
+                if current_value is None:
+                    continue
+
+                candidate = replacements.get(current_value)
+
+                if candidate is None:
                     # Custom value, deliberately blank, or already current.
                     continue
+
+                replacement = candidate
 
             if replacement != expected_default:
                 raise RuntimeError(
