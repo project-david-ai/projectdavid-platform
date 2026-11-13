@@ -1,3 +1,11 @@
+## [1.47.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.47.1...v1.47.2) (2026-11-13)
+
+
+### Bug Fixes
+
+* **platform:** narrow env migration value types for mypy ([fae42db](https://github.com/project-david-ai/projectdavid-platform/commit/fae42db879edfab164a90052c05100d679ed931a))
+* **platform:** reconcile obsolete provider URL defaults in generated runtimes ([0200888](https://github.com/project-david-ai/projectdavid-platform/commit/020088845d8fb675d03cf477fa1d883ddba9ba37))
+
 ## [1.47.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.47.0...v1.47.1) (2026-11-06)
 
 
