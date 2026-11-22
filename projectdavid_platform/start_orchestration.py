@@ -22,6 +22,11 @@ from urllib.parse import quote_plus
 import typer
 
 from projectdavid_platform.credential_handoff import handoff_admin_credential
+from projectdavid_platform.runtime_reconcile import (
+    generate_secret,
+    reconcile_compose,
+    reconcile_env,
+)
 
 # ---------------------------------------------------------------------------
 # start_orchestration.py
@@ -320,6 +325,8 @@ class Orchestrator:
         "SECRET_KEY",
         "DEFAULT_SECRET_KEY",
         "SANDBOX_AUTH_SECRET",
+        "PROJECT_DAVID_CREDENTIAL_KEY",
+        "PROJECT_DAVID_PROVIDER_KEY_HMAC_KEY",
         "SMBCLIENT_PASSWORD",
         "SEARXNG_SECRET_KEY",
     ]
@@ -377,7 +384,7 @@ class Orchestrator:
         "TRAINING_PROFILE": "laptop",
         "VLLM_BASE_URL": "http://inference_worker:8000",
         "OLLAMA_BASE_URL": "http://ollama:11434/v1",
-        "ASSISTANTS_BASE_URL": "http://localhost:80",
+        "ASSISTANTS_BASE_URL": "http: // nginx_proxy: 80",
         "SANDBOX_SERVER_URL": "http://sandbox:8000",
         "DOWNLOAD_BASE_URL": "http://localhost:80/v1/files/download",
         "HF_TOKEN": "",  # nosec B105
@@ -447,6 +454,8 @@ class Orchestrator:
             "ADMIN_API_KEY",
             "SIGNED_URL_SECRET",
             "SANDBOX_AUTH_SECRET",
+            "PROJECT_DAVID_CREDENTIAL_KEY",
+            "PROJECT_DAVID_PROVIDER_KEY_HMAC_KEY",
             "SECRET_KEY",
             "DEFAULT_SECRET_KEY",
             "SEARXNG_SECRET_KEY",
@@ -501,6 +510,7 @@ class Orchestrator:
             self.log.setLevel(logging.DEBUG)
 
         self._ensure_config_files()
+        self._reconcile_compose_defaults()
 
         self.base_compose = _resolve_compose_file(BASE_COMPOSE_FILE)
         self.ollama_compose = _resolve_compose_file(OLLAMA_COMPOSE_FILE)
@@ -560,32 +570,53 @@ class Orchestrator:
         except Exception as e:
             self.log.debug("Could not update PDAVID_VERSION in .env: %s", e)
 
+    def _reconcile_compose_defaults(self) -> None:
+        """Layer new packaged Compose definitions above user-owned configuration."""
+        bundled = importlib.resources.files(PACKAGE_NAME)
+        for filename, attribute, overlay_name in (
+            (
+                BASE_COMPOSE_FILE,
+                "_reconciled_compose_overlay",
+                ".projectdavid-reconciled.yml",
+            ),
+            (
+                OLLAMA_COMPOSE_FILE,
+                "_reconciled_ollama_compose_overlay",
+                ".projectdavid-reconciled.ollama.yml",
+            ),
+        ):
+            overlay = Path.cwd() / overlay_name
+            setattr(
+                self,
+                attribute,
+                (
+                    overlay
+                    if reconcile_compose(
+                        packaged_compose=(bundled / filename).read_text(
+                            encoding="utf-8"
+                        ),
+                        local_compose=Path.cwd() / filename,
+                        overlay_path=overlay,
+                    )
+                    else None
+                ),
+            )
+
     def _ensure_config_files(self) -> None:
         copied = []
 
         for pkg_rel, cwd_rel in _BUNDLED_CONFIGS:
             dest = Path.cwd() / cwd_rel
 
-            if dest.exists() and dest.is_dir():
-                self.log.warning(
-                    "Found a directory at '%s' — Docker created it before the config "
-                    "file could be installed. Replacing with the correct bundled file.",
-                    cwd_rel,
-                )
-                try:
-                    shutil.rmtree(dest)
-                except Exception as e:
-                    self.log.warning(
-                        "Could not remove spurious directory '%s': %s. "
-                        "Please delete it manually and re-run pdavid.",
-                        cwd_rel,
-                        e,
+            if dest.exists():
+                if dest.is_dir():
+                    raise RuntimeError(
+                        f"Expected configuration file at {dest}, found directory. "
+                        "Refusing to remove existing runtime data."
                     )
+                if not self.managed_runtime:
+                    self.log.debug("Existing runtime config preserved: %s", cwd_rel)
                     continue
-
-            if dest.exists() and not self.managed_runtime:
-                self.log.debug("Config file already present — skipping: %s", cwd_rel)
-                continue
 
             try:
                 pkg_files = importlib.resources.files(PACKAGE_NAME)
@@ -739,8 +770,15 @@ class Orchestrator:
             self.base_compose,
         ]
 
+        base_overlay = getattr(self, "_reconciled_compose_overlay", None)
+        if base_overlay is not None:
+            files += ["-f", str(base_overlay)]
+
         if getattr(self.args, "ollama", False):
             files += ["-f", self.ollama_compose]
+            ollama_overlay = getattr(self, "_reconciled_ollama_compose_overlay", None)
+            if ollama_overlay is not None:
+                files += ["-f", str(ollama_overlay)]
 
         release_override = getattr(
             self.args,
@@ -1283,10 +1321,7 @@ class Orchestrator:
         generation_log = {k: "Default value" for k in env_values}
 
         for key in self._GENERATED_SECRETS:
-            if key == "API_KEY":
-                env_values[key] = f"ea_{secrets.token_urlsafe(16)}"
-            else:
-                env_values[key] = secrets.token_hex(32)
+            env_values[key] = generate_secret(key)
             generation_log[key] = "Generated new secret (forced)"
 
         for key in self._GENERATED_TOOL_IDS:
@@ -1490,6 +1525,11 @@ class Orchestrator:
                 self._ENV_FILE,
             )
             self._migrate_generated_env_defaults(env_path)
+            reconcile_env(
+                env_path,
+                generated_names=self._GENERATED_SECRETS,
+                defaults=self._DEFAULT_VALUES,
+            )
 
         load_dotenv(
             dotenv_path=self._ENV_FILE,
