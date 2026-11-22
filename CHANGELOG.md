@@ -1,3 +1,19 @@
+# [1.48.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.47.2...v1.48.0) (2026-11-22)
+
+
+### Bug Fixes
+
+* **cli:** suppress bandit B602/B607 false positives on Windows shell flag ([c160489](https://github.com/project-david-ai/projectdavid-platform/commit/c160489fc2706907d80bdb5db2de85cbac8c3adb))
+* **infra:** pin all custom images to v1.37.0 ([5c2f65a](https://github.com/project-david-ai/projectdavid-platform/commit/5c2f65a980ff0f9d43b9b18515e375d3fb1a063b))
+* **lint:** suppress ruff F541 f-string and F401 unused import warnings ([0f2dadd](https://github.com/project-david-ai/projectdavid-platform/commit/0f2dadd15cfda5ef585ca2afbfd7dba21ef19cd2))
+
+
+### Features
+
+* **infra:** route Ray dashboard via nginx, remove unnecessary host port mappings ([29d4650](https://github.com/project-david-ai/projectdavid-platform/commit/29d46509b12a6923eef61cfc7f9e4645da17def9))
+* **infra:** route Ray dashboard via nginx, remove unnecessary host port mappings ([c937191](https://github.com/project-david-ai/projectdavid-platform/commit/c9371912b1c66b40a572cd3645c3e918b88a823f))
+* **platform:** reconcile runtime configuration and establish auto PR workflow ([db65dc6](https://github.com/project-david-ai/projectdavid-platform/commit/db65dc6627d572ac499f4e72f164675e29e92354))
+
 ## [1.47.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.47.1...v1.47.2) (2026-11-13)
 
 
