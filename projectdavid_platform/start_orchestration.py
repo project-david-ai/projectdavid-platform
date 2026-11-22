@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import importlib.resources
+import json
 import logging
 import os
 import platform as _platform
@@ -11,13 +12,16 @@ import shutil
 import socket as _socket
 import subprocess  # nosec B404
 import sys
+import threading  # nosec B404
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List, Optional
+from typing import Callable, List, Optional
 from urllib.parse import quote_plus
 
 import typer
+
+from projectdavid_platform.credential_handoff import handoff_admin_credential
 
 # ---------------------------------------------------------------------------
 # start_orchestration.py
@@ -34,6 +38,9 @@ import typer
 #   pdavid --mode up --services api db      # Start specific services only
 #   pdavid --mode logs --follow             # Tail logs
 #   pdavid --mode down_only                 # Stop the stack
+#
+#   GPU INFERENCE via vLLM / Ray Serve (opt-in, requires NVIDIA GPU)
+#   pdavid --mode up --vllm                 # vLLM / Ray Serve inference only
 #
 #   GPU INFERENCE via Ollama (opt-in, requires NVIDIA GPU)
 #   pdavid --mode up --ollama               # Ollama local inference
@@ -94,7 +101,7 @@ except ImportError:
     raise SystemExit(1)
 
 try:
-    from dotenv import load_dotenv, set_key
+    from dotenv import dotenv_values, load_dotenv, set_key
 except ImportError:
     typer.echo("[error] python-dotenv is required: pip install python-dotenv", err=True)
     raise SystemExit(1)
@@ -103,11 +110,20 @@ except ImportError:
 # License validator import
 # ---------------------------------------------------------------------------
 try:
-    from projectdavid_platform.license_validator import enforce_license
+    from projectdavid_platform.license_validator import (
+        enforce_license as _enforce_license,
+    )
 
+    enforce_license: Callable[[], None] | None = _enforce_license
     _LICENSE_AVAILABLE = True
 except ImportError:
+    enforce_license = None
     _LICENSE_AVAILABLE = False
+
+# Q ships a deliberately frozen, first-party Project David runtime. The
+# standalone Q entrypoint opts into this private mode before invoking the CLI.
+# Normal projectdavid-platform installations must never enable it.
+_FIRST_PARTY_EMBEDDED_RUNTIME = False
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -116,6 +132,36 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 log = logging.getLogger(__name__)
+
+
+def _enable_first_party_embedded_runtime() -> None:
+    """Enable the private licence exemption used only by the Q-frozen runtime."""
+    global _FIRST_PARTY_EMBEDDED_RUNTIME
+    _FIRST_PARTY_EMBEDDED_RUNTIME = True
+
+
+def _enforce_runtime_license() -> bool:
+    """
+    Enforce the commercial Platform licence unless this is the first-party
+    embedded Q runtime.
+
+    Ordinary Platform installations fail closed if the validator itself is
+    unavailable. Q's special frozen executable deliberately excludes the
+    validator and opts into the embedded-runtime exemption from its entrypoint.
+    """
+    if _FIRST_PARTY_EMBEDDED_RUNTIME:
+        log.debug(
+            "Commercial licence enforcement disabled for first-party embedded runtime."
+        )
+        return True
+
+    if not _LICENSE_AVAILABLE or enforce_license is None:
+        log.error("Project David licence validator is unavailable; refusing startup.")
+        return False
+
+    enforce_license()
+    return True
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -182,6 +228,8 @@ _TYPER_HELP = (
     "Install:    pip install projectdavid-platform\n\n"
     "Base stack: pdavid --mode up\n"
     "Update:     pdavid --mode up --pull\n\n"
+    "vLLM / Ray Serve inference (opt-in):\n"
+    "  pdavid --mode up --vllm\n\n"
     "Ollama inference (opt-in):\n"
     "  pdavid --mode up --ollama\n\n"
     "Sovereign Forge — training + Ray inference mesh (opt-in):\n"
@@ -197,6 +245,63 @@ app = typer.Typer(
     help=_TYPER_HELP,
     add_completion=False,
 )
+
+
+def _activate_runtime_directory(
+    runtime_dir: Optional[Path],
+    *,
+    managed_runtime: bool = False,
+) -> Path:
+    """
+    Activate the Project David runtime instance for this CLI process.
+
+    The launcher location and runtime instance are deliberately separate.
+    All mutable runtime state (.env, compose files, shared_data, bootstrap
+    state) belongs to the runtime directory, not to the installed launcher.
+
+    Resolution order:
+      1. --runtime-dir
+      2. PDAVID_RUNTIME_HOME
+      3. current working directory (backwards compatible)
+    """
+    configured = runtime_dir
+
+    if configured is None:
+        environment_value = os.environ.get("PDAVID_RUNTIME_HOME", "").strip()
+        if environment_value:
+            configured = Path(environment_value)
+
+    if configured is None:
+        resolved = Path.cwd().resolve()
+    else:
+        resolved = Path(configured).expanduser().resolve()
+
+    if not resolved.exists():
+        if managed_runtime:
+            resolved.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            log.info(
+                "Created managed Project David runtime directory: %s",
+                resolved,
+            )
+        else:
+            raise typer.BadParameter(
+                f"Project David runtime directory does not exist: {resolved}",
+                param_hint="--runtime-dir",
+            )
+
+    if not resolved.is_dir():
+        raise typer.BadParameter(
+            f"Project David runtime path is not a directory: {resolved}",
+            param_hint="--runtime-dir",
+        )
+
+    os.chdir(resolved)
+    log.debug("Project David runtime directory: %s", resolved)
+
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -298,10 +403,20 @@ class Orchestrator:
         "SMBCLIENT_PORT": "445",
         "SAMBA_USERID": "1000",
         "SAMBA_GROUPID": "1000",
-        "HYPERBOLIC_BASE_URL": "https://api.hyperbolic.xyz/v1",
+        "HYPERBOLIC_BASE_URL": "https://api.hyperbolic.ai/inference/v1",
         "TOGETHER_BASE_URL": "https://api.together.xyz/v1",
         "LOG_LEVEL": "INFO",
         "PYTHONUNBUFFERED": "1",
+    }
+
+    # Explicit, audited default migrations for existing generated runtimes.
+    # Only a value matching a known obsolete packaged default is updated;
+    # customized endpoints and all generated credentials are preserved.
+    # Extend this mapping when future provider defaults change.
+    _ENV_DEFAULT_MIGRATIONS = {
+        "HYPERBOLIC_BASE_URL": {
+            "https://api.hyperbolic.xyz/v1": "https://api.hyperbolic.ai/inference/v1",
+        },
     }
 
     _ENV_STRUCTURE = {
@@ -379,6 +494,8 @@ class Orchestrator:
         self.args = args
         self.is_windows = _platform.system() == "Windows"
         self.log = log
+        self.progress_json = bool(getattr(args, "progress_json", False))
+        self.managed_runtime = bool(getattr(args, "managed_runtime", False))
 
         if getattr(self.args, "verbose", False):
             self.log.setLevel(logging.DEBUG)
@@ -466,7 +583,7 @@ class Orchestrator:
                     )
                     continue
 
-            if dest.exists():
+            if dest.exists() and not self.managed_runtime:
                 self.log.debug("Config file already present — skipping: %s", cwd_rel)
                 continue
 
@@ -490,7 +607,7 @@ class Orchestrator:
                     e,
                 )
 
-        if copied:
+        if copied and not self.managed_runtime:
             typer.echo(
                 f"\n  Installed {len(copied)} file(s) to CWD:\n"
                 + "\n".join(f"    {f}" for f in copied)
@@ -503,6 +620,10 @@ class Orchestrator:
         system = _platform.system().lower()
         install_url = _DOCKER_INSTALL_URLS.get(
             system, "https://docs.docker.com/get-docker/"
+        )
+        self._emit_error(
+            "DOCKER_UNAVAILABLE",
+            "Docker is not available.",
         )
         typer.echo(
             f"\nDocker is not installed or not found in PATH.\n"
@@ -522,6 +643,10 @@ class Orchestrator:
             )
             return True
         except (subprocess.CalledProcessError, FileNotFoundError):
+            self._emit_error(
+                "DOCKER_COMPOSE_UNAVAILABLE",
+                "Docker Compose is not available.",
+            )
             typer.echo(
                 f"\nThe Docker Compose plugin is not available.\n"
                 f"Install it: {_DOCKER_COMPOSE_INSTALL_URL}\n"
@@ -546,6 +671,10 @@ class Orchestrator:
         if self._has_nvidia_support():
             self.log.info("NVIDIA GPU support confirmed.")
             return True
+        self._emit_error(
+            "GPU_UNAVAILABLE",
+            "A compatible NVIDIA GPU is required.",
+        )
         typer.echo(
             f"\nGPU service requested ({flag}) but NVIDIA drivers / nvidia-smi not found.\n"
             "Requirements:\n"
@@ -560,10 +689,12 @@ class Orchestrator:
     def _preflight(self) -> bool:
         self.log.debug("Running preflight dependency checks...")
 
-        if _LICENSE_AVAILABLE:
-            enforce_license()
-        else:
-            self.log.debug("License validator not available — skipping.")
+        if not _enforce_runtime_license():
+            self._emit_error(
+                "LICENSE_INVALID",
+                "Project David runtime validation failed.",
+            )
+            return False
 
         if not self._has_docker():
             return False
@@ -571,20 +702,26 @@ class Orchestrator:
             return False
 
         training = getattr(self.args, "training", False)
+        vllm = getattr(self.args, "vllm", False)
         ollama = getattr(self.args, "ollama", False)
 
         if training and not self._validate_gpu_prereqs("--training"):
             return False
 
-        if training and not self._check_port_conflicts(
-            {
-                9001: ("training-api", "error"),
+        if vllm and not self._validate_gpu_prereqs("--vllm"):
+            return False
+
+        if training or vllm:
+            ray_ports = {
                 8265: ("Ray dashboard", "error"),
                 10001: ("Ray client server", "error"),
                 8002: ("inference-worker HTTP (Ray Serve)", "warn"),
             }
-        ):
-            return False
+            if training:
+                ray_ports[9001] = ("training-api", "error")
+
+            if not self._check_port_conflicts(ray_ports):
+                return False
 
         if ollama and not self._validate_gpu_prereqs("--ollama"):
             return False
@@ -605,15 +742,398 @@ class Orchestrator:
         if getattr(self.args, "ollama", False):
             files += ["-f", self.ollama_compose]
 
+        release_override = getattr(
+            self.args,
+            "release_override",
+            None,
+        )
+
+        if release_override:
+            files += [
+                "-f",
+                str(release_override),
+            ]
+
+        if getattr(self.args, "vllm", False):
+            files += ["--profile", "vllm"]
+
         if getattr(self.args, "training", False):
             files += ["--profile", "training"]
 
         return files
 
+    def _emit_progress(
+        self,
+        stage: str,
+        **details: object,
+    ) -> None:
+        if not self.progress_json:
+            return
+
+        payload: dict[str, object] = {
+            "type": "progress",
+            "stage": stage,
+        }
+
+        payload.update(
+            {key: value for key, value in details.items() if value is not None}
+        )
+
+        typer.echo(
+            "Q_PROGRESS "
+            + json.dumps(
+                payload,
+                separators=(",", ":"),
+            )
+        )
+
+    def _emit_error(self, code: str, message: str) -> None:
+        if not self.progress_json:
+            return
+
+        typer.echo(
+            "Q_ERROR "
+            + json.dumps(
+                {
+                    "type": "error",
+                    "code": code,
+                    "message": message,
+                },
+                separators=(",", ":"),
+            ),
+            err=True,
+        )
+
+    def _get_required_images(self) -> List[str]:
+        result = self._run_command(
+            ["docker", "compose"] + self._compose_files() + ["config", "--images"],
+            check=True,
+            capture_output=True,
+            suppress_logs=True,
+        )
+
+        return sorted(
+            {
+                line.strip()
+                for line in (result.stdout or "").splitlines()
+                if line.strip()
+            }
+        )
+
+    def _get_missing_images(self, images: List[str]) -> List[str]:
+        missing = []
+        total = len(images)
+
+        if total:
+            self._emit_progress(
+                "images_checking",
+                current=0,
+                total=total,
+            )
+
+        for index, image in enumerate(
+            images,
+            start=1,
+        ):
+            result = self._run_command(
+                ["docker", "image", "inspect", image],
+                check=False,
+                capture_output=True,
+                suppress_logs=True,
+            )
+
+            if result.returncode != 0:
+                missing.append(image)
+
+            self._emit_progress(
+                "images_checking",
+                current=index,
+                total=total,
+                item=image,
+            )
+
+        return missing
+
+    def _prepare_required_images(self) -> None:
+        if getattr(
+            self.args,
+            "release_override",
+            None,
+        ):
+            # Q has already inspected, pulled, and verified every
+            # planner-requested immutable digest before invoking Platform.
+            return
+
+        if not self.progress_json:
+            return
+
+        self._emit_progress("images_checking")
+
+        images = self._get_required_images()
+        missing = self._get_missing_images(images)
+
+        if not missing:
+            return
+
+        self._emit_progress(
+            "image_missing",
+            total=len(missing),
+        )
+
+        total = len(missing)
+
+        for index, image in enumerate(
+            missing,
+            start=1,
+        ):
+            self._emit_progress(
+                "image_downloading",
+                current=index - 1,
+                total=total,
+                item=image,
+            )
+
+            self._run_command(
+                ["docker", "pull", image],
+                check=True,
+            )
+
+            self._emit_progress(
+                "image_downloading",
+                current=index,
+                total=total,
+                item=image,
+            )
+
     def _get_all_services(self) -> List[str]:
         if not self.compose_config:
             return []
         return list(self.compose_config.get("services", {}).keys())
+
+    def _get_active_services(
+        self,
+        target: List[str],
+    ) -> List[str]:
+        if target:
+            return list(dict.fromkeys(target))
+
+        try:
+            result = self._run_command(
+                ["docker", "compose"]
+                + self._compose_files()
+                + [
+                    "config",
+                    "--services",
+                ],
+                check=True,
+                capture_output=True,
+                suppress_logs=True,
+            )
+        except Exception:
+            # Progress discovery must never make
+            # stack startup fail.
+            return []
+
+        if result is None:
+            return []
+
+        stdout = (
+            getattr(
+                result,
+                "stdout",
+                "",
+            )
+            or ""
+        )
+
+        return list(
+            dict.fromkeys(line.strip() for line in stdout.splitlines() if line.strip())
+        )
+
+    def _get_running_services(self) -> List[str]:
+        result = self._run_command(
+            ["docker", "compose"]
+            + self._compose_files()
+            + [
+                "ps",
+                "--status",
+                "running",
+                "--services",
+            ],
+            check=False,
+            capture_output=True,
+            suppress_logs=True,
+        )
+
+        if result.returncode != 0:
+            return []
+
+        return [
+            line.strip() for line in (result.stdout or "").splitlines() if line.strip()
+        ]
+
+    def _emit_service_start_progress(
+        self,
+        services: List[str],
+        previous_running=None,
+    ):
+        service_set = set(services)
+
+        running = [
+            service
+            for service in self._get_running_services()
+            if service in service_set
+        ]
+
+        running_set = set(running)
+
+        previous = set(previous_running) if previous_running else set()
+
+        newly_running = [service for service in running if service not in previous]
+
+        self._emit_progress(
+            "containers_starting",
+            current=len(running_set),
+            total=len(services),
+            item=(newly_running[-1] if newly_running else None),
+        )
+
+        return running_set
+
+    def _run_compose_up_with_progress(
+        self,
+        up_cmd,
+        target: List[str],
+    ):
+        if not getattr(
+            self,
+            "progress_json",
+            False,
+        ):
+            self._emit_progress(
+                "containers_starting",
+            )
+
+            return self._run_command(
+                up_cmd,
+                check=True,
+            )
+
+        services = self._get_active_services(
+            target,
+        )
+
+        if not services:
+            self._emit_progress(
+                "containers_starting",
+            )
+
+            return self._run_command(
+                up_cmd,
+                check=True,
+            )
+
+        self._emit_progress(
+            "containers_starting",
+            current=0,
+            total=len(services),
+        )
+
+        stop_event = threading.Event()
+
+        previous_running: set[str] = set()
+
+        def monitor():
+            nonlocal previous_running
+
+            while not stop_event.is_set():
+                try:
+                    running = set(
+                        service
+                        for service in self._get_running_services()
+                        if service in set(services)
+                    )
+
+                    if running != previous_running:
+                        newly_running = [
+                            service
+                            for service in services
+                            if (service in running and service not in previous_running)
+                        ]
+
+                        self._emit_progress(
+                            "containers_starting",
+                            current=len(running),
+                            total=len(services),
+                            item=(newly_running[-1] if newly_running else None),
+                        )
+
+                        previous_running = running
+
+                except Exception as exc:
+                    # Progress telemetry must never
+                    # make stack startup fail.
+                    self.log.debug(
+                        "Service progress inspection failed: %s",
+                        exc,
+                    )
+
+                stop_event.wait(
+                    0.35,
+                )
+
+        monitor_thread = threading.Thread(
+            target=monitor,
+            name="pdavid-q-progress",
+            daemon=True,
+        )
+
+        monitor_thread.start()
+
+        try:
+            result = self._run_command(
+                up_cmd,
+                check=True,
+            )
+        finally:
+            stop_event.set()
+
+            monitor_thread.join(
+                timeout=2,
+            )
+
+        try:
+            final_running = set(
+                service
+                for service in self._get_running_services()
+                if service in set(services)
+            )
+
+            if final_running != previous_running:
+                newly_running = [
+                    service
+                    for service in services
+                    if (service in final_running and service not in previous_running)
+                ]
+
+                self._emit_progress(
+                    "containers_starting",
+                    current=len(
+                        final_running,
+                    ),
+                    total=len(services),
+                    item=(newly_running[-1] if newly_running else None),
+                )
+
+        except Exception as exc:
+            # Startup already succeeded; a telemetry
+            # inspection failure is non-fatal.
+            self.log.debug(
+                "Final service progress inspection failed: %s",
+                exc,
+            )
+
+        return result
 
     def _run_command(
         self,
@@ -812,7 +1332,16 @@ class Orchestrator:
                 "Package not found — defaulting to latest"
             )
 
-        self._prompt_user_required(env_values, generation_log)
+        if self.managed_runtime:
+            self.log.info(
+                "Managed runtime bootstrap: optional user configuration "
+                "will not be inherited from the shell."
+            )
+        else:
+            self._prompt_user_required(
+                env_values,
+                generation_log,
+            )
 
         env_lines = [
             f"# Auto-generated by projectdavid-platform — {time.strftime('%Y-%m-%d %H:%M:%S %Z')}",
@@ -877,13 +1406,95 @@ class Orchestrator:
             "    pdavid bootstrap-admin\n"
         )
 
+    def _migrate_generated_env_defaults(self, env_path: Path) -> None:
+        """Reconcile known obsolete defaults in a generated runtime .env.
+
+        Deliberately do not rewrite secrets or arbitrary user-set values. A pip
+        installation cannot locate all runtime directories, so this migration
+        executes on the next pdavid invocation, before load_dotenv and Compose.
+        """
+        with env_path.open("r", encoding="utf-8-sig") as handle:
+            generated_header = handle.readline().strip()
+
+        if not generated_header.startswith("# Auto-generated by projectdavid-platform"):
+            self.log.debug("Preserving unmanaged .env; no default migration applied")
+            return
+
+        current_values = dotenv_values(env_path)
+        migrated = []
+
+        for key, replacements in self._ENV_DEFAULT_MIGRATIONS.items():
+            expected_default = self._DEFAULT_VALUES[key]
+
+            if key not in current_values:
+                # The key did not exist in an older generated runtime.
+                replacement = expected_default
+            else:
+                current_value = current_values[key]
+
+                if current_value is None:
+                    continue
+
+                candidate = replacements.get(current_value)
+
+                if candidate is None:
+                    # Custom value, deliberately blank, or already current.
+                    continue
+
+                replacement = candidate
+
+            if replacement != expected_default:
+                raise RuntimeError(
+                    f"Default migration for {key} disagrees with packaged default"
+                )
+
+            set_key(str(env_path), key, replacement, quote_mode="never")
+            migrated.append(key)
+
+        if migrated:
+            self.log.info(
+                "Reconciled generated .env defaults: %s (secrets preserved)",
+                ", ".join(migrated),
+            )
+
     def _check_for_required_env_file(self):
+        env_path = Path(self._ENV_FILE)
+        runtime_identity_path = Path(".projectdavid-instance-id")
+
+        if not env_path.exists() and runtime_identity_path.is_file():
+            message = (
+                "Existing Project David runtime identity was found, "
+                "but .env is missing. Refusing to generate replacement "
+                "secrets because persistent runtime state may depend on "
+                "the original credentials. Credential/configuration "
+                "recovery is required."
+            )
+
+            self._emit_error(
+                "ENV_RECOVERY_REQUIRED",
+                message,
+            )
+            self.log.error(message)
+
+            raise SystemExit(1)
+
         if not os.path.exists(self._ENV_FILE):
-            self.log.warning("'%s' not found — generating...", self._ENV_FILE)
+            self.log.warning(
+                "'%s' not found - generating...",
+                self._ENV_FILE,
+            )
             self._generate_dot_env_file()
         else:
-            self.log.info("'%s' exists — loading.", self._ENV_FILE)
-            load_dotenv(dotenv_path=self._ENV_FILE, override=True)
+            self.log.info(
+                "'%s' exists - reconciling generated defaults and loading.",
+                self._ENV_FILE,
+            )
+            self._migrate_generated_env_defaults(env_path)
+
+        load_dotenv(
+            dotenv_path=self._ENV_FILE,
+            override=True,
+        )
 
     def _configure_shared_path(self):
         system = _platform.system().lower()
@@ -987,6 +1598,59 @@ class Orchestrator:
         )
         return ray_address
 
+    def _compose_owns_host_port(self, port: int) -> bool:
+        try:
+            compose_result = self._run_command(
+                ["docker", "compose"] + self._compose_files() + ["ps", "-q"],
+                check=False,
+                capture_output=True,
+                suppress_logs=True,
+            )
+
+            if compose_result.returncode != 0:
+                return False
+
+            compose_container_ids = {
+                line.strip()
+                for line in (compose_result.stdout or "").splitlines()
+                if line.strip()
+            }
+
+            if not compose_container_ids:
+                return False
+
+            published_result = self._run_command(
+                [
+                    "docker",
+                    "ps",
+                    "--filter",
+                    f"publish={port}",
+                    "--format",
+                    "{{.ID}}",
+                ],
+                check=False,
+                capture_output=True,
+                suppress_logs=True,
+            )
+
+            if published_result.returncode != 0:
+                return False
+
+            published_container_ids = {
+                line.strip()
+                for line in (published_result.stdout or "").splitlines()
+                if line.strip()
+            }
+
+            return any(
+                compose_id.startswith(published_id)
+                or published_id.startswith(compose_id)
+                for compose_id in compose_container_ids
+                for published_id in published_container_ids
+            )
+        except Exception:
+            return False
+
     def _check_port_conflicts(self, ports: dict) -> bool:
         blocked = []
         warned = []
@@ -1000,6 +1664,16 @@ class Orchestrator:
                 in_use = False
 
             if in_use:
+                if self._compose_owns_host_port(port):
+                    self.log.info(
+                        "Port %s (%s) is already owned by this "
+                        "Project David runtime; existing infrastructure "
+                        "will be reconciled.",
+                        port,
+                        label,
+                    )
+                    continue
+
                 if level == "warn":
                     warned.append((port, label))
                 else:
@@ -1013,6 +1687,10 @@ class Orchestrator:
             )
 
         if blocked:
+            self._emit_error(
+                "PORT_CONFLICT",
+                "Required local ports are already in use.",
+            )
             typer.echo("\n" + "=" * 60, err=True)
             typer.echo("  Port conflict — startup blocked", err=True)
             typer.echo("=" * 60, err=True)
@@ -1068,31 +1746,83 @@ class Orchestrator:
         except Exception:
             return False
 
-    def _provision_admin_api_key(self) -> str:
-        env_path = Path(self._ENV_FILE)
-        content = env_path.read_text(encoding="utf-8")
+    def _persist_admin_api_key(self, api_key: str) -> None:
+        """Persist the real admin credential returned by Project David Core."""
+        if not api_key or not api_key.startswith("ad_"):
+            raise ValueError("Invalid Project David admin API key")
 
-        existing = os.environ.get("ADMIN_API_KEY", "").strip()
-        if existing and existing not in self._INSECURE_VALUES:
-            self.log.info("ADMIN_API_KEY already present in .env — reusing.")
-            return existing
+        set_key(self._ENV_FILE, "ADMIN_API_KEY", api_key)
+        os.environ["ADMIN_API_KEY"] = api_key
+        self.log.info("Project David ADMIN_API_KEY persisted from Core bootstrap.")
 
-        new_key = f"ad_{secrets.token_urlsafe(32)}"
+    @staticmethod
+    def _extract_json_payload(output: str) -> dict:
+        """Extract the bootstrap JSON object from command output.
 
-        if re.search(r"^ADMIN_API_KEY=", content, re.MULTILINE):
-            content = re.sub(
-                r"^ADMIN_API_KEY=.*",
-                f"ADMIN_API_KEY={new_key}",
-                content,
-                flags=re.MULTILINE,
+        Runtime logging may appear around the machine-readable line, so parse
+        backwards and accept the final object that carries a bootstrap status.
+        """
+        for line in reversed(output.splitlines()):
+            candidate = line.strip()
+            if not candidate.startswith("{"):
+                continue
+            try:
+                payload = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict) and "status" in payload:
+                return payload
+
+        raise ValueError("Project David bootstrap did not return a valid JSON result")
+
+    @staticmethod
+    def _extract_legacy_bootstrap(output: str) -> dict:
+        """Normalize bootstrap output from Core releases that predate --json."""
+        api_key_match = re.search(r"API KEY\s*:\s*(ad_[^\s]+)", output)
+        user_id_match = re.search(r"User ID\s*:\s*([^\s]+)", output)
+        prefix_match = re.search(r"Prefix\s*:\s*([^\s]+)", output)
+
+        if api_key_match:
+            api_key = api_key_match.group(1)
+            return {
+                "status": "ok",
+                "user_id": (user_id_match.group(1) if user_id_match else None),
+                "email": None,
+                "key_prefix": (prefix_match.group(1) if prefix_match else api_key[:8]),
+                "user_created": None,
+                "key_created": True,
+                "api_key": api_key,
+                "protocol": "legacy",
+            }
+
+        existing_prefix = re.search(
+            r"already has an API key \(prefix=([^)]+)\)", output
+        )
+        if existing_prefix:
+            return {
+                "status": "ok",
+                "user_id": None,
+                "email": None,
+                "key_prefix": existing_prefix.group(1),
+                "user_created": None,
+                "key_created": False,
+                "api_key": None,
+                "protocol": "legacy",
+            }
+
+        raise ValueError("Unable to parse Project David legacy bootstrap output")
+
+    @staticmethod
+    def _json_protocol_unsupported(output: str) -> bool:
+        lowered = output.lower()
+        return "--json" in lowered and any(
+            marker in lowered
+            for marker in (
+                "no such option",
+                "unexpected extra argument",
+                "unrecognized arguments",
             )
-        else:
-            content += f"\nADMIN_API_KEY={new_key}\n"
-
-        env_path.write_text(content, encoding="utf-8")
-        os.environ["ADMIN_API_KEY"] = new_key
-        self.log.info("ADMIN_API_KEY written to .env.")
-        return new_key
+        )
 
     def _resolve_db_credentials(self):
         """
@@ -1115,7 +1845,32 @@ class Orchestrator:
     def _handle_up(self):
         load_dotenv(dotenv_path=self._ENV_FILE, override=True)
         self._validate_secrets()
-        self._check_version_upgrade()
+
+        release_override = getattr(
+            self.args,
+            "release_override",
+            None,
+        )
+
+        if release_override and getattr(
+            self.args,
+            "pull",
+            False,
+        ):
+            self._emit_error(
+                "RELEASE_OVERRIDE_PULL_CONFLICT",
+                ("A prepared release override cannot be combined " "with --pull."),
+            )
+
+            typer.echo(
+                ("[error] --release-override cannot be combined " "with --pull."),
+                err=True,
+            )
+
+            raise SystemExit(1)
+
+        if not release_override:
+            self._check_version_upgrade()
 
         up_cmd = ["docker", "compose"] + self._compose_files() + ["up"]
         if not getattr(self.args, "attached", False):
@@ -1147,7 +1902,15 @@ class Orchestrator:
             up_cmd.extend(target)
 
         try:
-            self._run_command(up_cmd, check=True)
+            self._run_compose_up_with_progress(
+                up_cmd,
+                target,
+            )
+
+            self._emit_progress(
+                "service_booting",
+            )
+
             self.log.info("Stack started successfully.")
         except subprocess.CalledProcessError:
             raise SystemExit(1)
@@ -1156,6 +1919,11 @@ class Orchestrator:
         target_services = getattr(self.args, "services", None) or []
         down_cmd = ["docker", "compose"] + self._compose_files()
 
+        # Include both optional Ray profiles during shutdown so a plain
+        # `pdavid --mode down_only` also tears down whichever inference/training
+        # profile was started previously.
+        if not getattr(self.args, "vllm", False):
+            down_cmd += ["--profile", "vllm"]
         if not getattr(self.args, "training", False):
             down_cmd += ["--profile", "training"]
 
@@ -1218,6 +1986,8 @@ class Orchestrator:
                 "-f",
                 self.base_compose,
                 "--profile",
+                "vllm",
+                "--profile",
                 "training",
                 "down",
                 "--volumes",
@@ -1238,7 +2008,13 @@ class Orchestrator:
             )
             raise SystemExit(1)
 
-    def exec_bootstrap_admin(self, db_url: Optional[str] = None):
+    def exec_bootstrap_admin(self, db_url: Optional[str] = None) -> dict:
+        """Bootstrap Core and return a normalized machine-readable result.
+
+        New Core images are queried using the JSON protocol.  Older Core images
+        are supported by a one-time fallback to their human-readable output.
+        Project David Core remains the sole authority that creates the key.
+        """
         self._ensure_api_running("bootstrap-admin")
         resolved_db_url = db_url or os.environ.get("DATABASE_URL")
         if not resolved_db_url:
@@ -1247,7 +2023,8 @@ class Orchestrator:
                 "Ensure DATABASE_URL is set in .env or pass --db-url explicitly."
             )
             raise SystemExit(1)
-        cmd = [
+
+        base_cmd = [
             "docker",
             "compose",
             "--project-directory",
@@ -1257,32 +2034,120 @@ class Orchestrator:
             "-f",
             self.base_compose,
             "exec",
+            "-T",
             API_SERVICE_NAME,
             "python",
             "/app/src/api/entities_api/cli/bootstrap_admin.py",
             "--db-url",
             resolved_db_url,
         ]
-        try:
-            self._run_command(cmd, check=True, suppress_logs=True)
-            self.log.info("bootstrap-admin finished.")
-        except subprocess.CalledProcessError:
+
+        # Preferred protocol: Core emits one structured bootstrap result.
+        result = self._run_command(
+            base_cmd + ["--json"],
+            check=False,
+            capture_output=True,
+            suppress_logs=True,
+        )
+        combined = "\n".join(
+            part
+            for part in (
+                getattr(result, "stdout", ""),
+                getattr(result, "stderr", ""),
+            )
+            if part
+        )
+
+        if result.returncode == 0:
+            try:
+                payload = self._extract_json_payload(combined)
+            except ValueError as exc:
+                self.log.error(str(exc))
+                raise SystemExit(1)
+        else:
+            if not self._json_protocol_unsupported(combined):
+                self.log.error("Project David bootstrap failed:\n%s", combined.strip())
+                raise SystemExit(1)
+
+            self.log.info(
+                "Core does not support bootstrap JSON protocol; "
+                "falling back to legacy bootstrap output."
+            )
+            legacy = self._run_command(
+                base_cmd,
+                check=False,
+                capture_output=True,
+                suppress_logs=True,
+            )
+            legacy_output = "\n".join(
+                part
+                for part in (
+                    getattr(legacy, "stdout", ""),
+                    getattr(legacy, "stderr", ""),
+                )
+                if part
+            )
+
+            if legacy.returncode != 0:
+                self.log.error(
+                    "Legacy Project David bootstrap failed:\n%s",
+                    legacy_output.strip(),
+                )
+                raise SystemExit(1)
+
+            try:
+                payload = self._extract_legacy_bootstrap(legacy_output)
+            except ValueError as exc:
+                self.log.error(str(exc))
+                raise SystemExit(1)
+
+        if payload.get("status") != "ok":
+            self.log.error(
+                "Project David bootstrap returned an error result: %s", payload
+            )
             raise SystemExit(1)
+
+        api_key = payload.get("api_key")
+        prefix = payload.get("key_prefix")
+
+        if api_key:
+            # Persist the actual plaintext generated and registered by Core.
+            self._persist_admin_api_key(str(api_key))
+        else:
+            # Core already has a hashed key and therefore cannot return plaintext.
+            # Platform must already possess the original plaintext from first boot.
+            existing = os.environ.get("ADMIN_API_KEY", "").strip()
+            if not existing:
+                self.log.error(
+                    "Project David already has an admin key, but Platform no "
+                    "longer possesses its plaintext. Credential recovery/rotation "
+                    "is required."
+                )
+                raise SystemExit(1)
+
+            if prefix and not existing.startswith(str(prefix)):
+                self.log.error(
+                    "Stored ADMIN_API_KEY does not match the Project David "
+                    "admin key prefix (%s). Credential recovery/rotation is "
+                    "required.",
+                    prefix,
+                )
+                raise SystemExit(1)
+
+            payload["api_key"] = existing
+
+        payload["protocol"] = payload.get("protocol", "json-v1")
+        self.log.info("bootstrap-admin finished.")
+        return payload
 
     def run(self):
         mode = getattr(self.args, "mode", "up")
 
-        if getattr(self.args, "vllm", False):
-            typer.echo(
-                "\n  [deprecated] --vllm is no longer needed. vLLM inference is now\n"
-                "  managed inside the inference-worker container via Ray Serve.\n"
-                "  Use --training to start the full inference mesh.\n",
-                err=True,
-            )
         if getattr(self.args, "gpu", False):
             typer.echo(
-                "\n  [deprecated] --gpu is no longer needed. Use --training to start\n"
-                "  the Ray Serve inference mesh, and --ollama for Ollama inference.\n",
+                "\n  [deprecated] --gpu is no longer needed. Use --vllm for the\n"
+                "  Ray Serve/vLLM inference substrate, --ollama for Ollama,\n"
+                "  or --training for the full Sovereign Forge stack.\n",
                 err=True,
             )
 
@@ -1294,8 +2159,14 @@ class Orchestrator:
             self._handle_nuke()
             return
 
+        if mode in ("up", "both"):
+            self._emit_progress("validating")
+
         if not self._preflight():
             raise SystemExit(1)
+
+        if mode in ("up", "both"):
+            self._prepare_required_images()
 
         if mode == "logs":
             self._handle_logs()
@@ -1493,6 +2364,24 @@ class WorkerNodeOrchestrator:
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
+    runtime_dir: Optional[Path] = typer.Option(
+        None,
+        "--runtime-dir",
+        help=(
+            "Project David runtime instance directory. "
+            "Contains .env, compose files, shared_data, and bootstrap state. "
+            "Defaults to PDAVID_RUNTIME_HOME or the current working directory."
+        ),
+    ),
+    release_override: Optional[Path] = typer.Option(
+        None,
+        "--release-override",
+        help=(
+            "Absolute path to a Q-prepared Compose release override. "
+            "Images must already be present locally. "
+            "Cannot be combined with --pull."
+        ),
+    ),
     mode: str = typer.Option(
         "up",
         "--mode",
@@ -1508,7 +2397,9 @@ def main(
         False, "--ollama", help="Start Ollama local inference. Requires NVIDIA GPU."
     ),
     vllm: bool = typer.Option(
-        False, "--vllm", help="[DEPRECATED] Use --training.", hidden=True
+        False,
+        "--vllm",
+        help="Start the vLLM / Ray Serve inference stack. Requires NVIDIA GPU.",
     ),
     gpu: bool = typer.Option(
         False,
@@ -1554,8 +2445,25 @@ def main(
         False, "--no-log-prefix", help="Omit service name prefix in logs."
     ),
     verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
+    progress_json: bool = typer.Option(
+        False,
+        "--progress-json",
+        help="Emit machine-readable lifecycle progress events.",
+        hidden=True,
+    ),
+    managed_runtime: bool = typer.Option(
+        False,
+        "--managed-runtime",
+        help="Refresh Platform-owned runtime configuration.",
+        hidden=True,
+    ),
 ) -> None:
     """Manage the Project David / Entities platform stack."""
+    _activate_runtime_directory(
+        runtime_dir,
+        managed_runtime=managed_runtime,
+    )
+
     if ctx.invoked_subcommand is not None:
         return
 
@@ -1566,6 +2474,38 @@ def main(
             err=True,
         )
         raise SystemExit(1)
+
+    if release_override is not None:
+        if mode not in {"up", "both"}:
+            raise typer.BadParameter(
+                ("--release-override is only valid with " "--mode up or --mode both"),
+                param_hint="--release-override",
+            )
+
+        if pull:
+            raise typer.BadParameter(
+                "--release-override cannot be combined with --pull",
+                param_hint="--release-override",
+            )
+
+        release_override = release_override.expanduser()
+
+        if not release_override.is_absolute():
+            raise typer.BadParameter(
+                "--release-override must be an absolute path",
+                param_hint="--release-override",
+            )
+
+        release_override = release_override.resolve()
+
+        if not release_override.is_file():
+            raise typer.BadParameter(
+                (
+                    "Prepared release override does not exist "
+                    f"or is not a file: {release_override}"
+                ),
+                param_hint="--release-override",
+            )
 
     if clear_volumes:
         down = True
@@ -1582,6 +2522,7 @@ def main(
         clear_volumes=clear_volumes,
         force_recreate=force_recreate,
         pull=pull,
+        release_override=release_override,
         attached=attached,
         build_before_up=build_before_up,
         no_cache=no_cache,
@@ -1592,6 +2533,8 @@ def main(
         timestamps=timestamps,
         no_log_prefix=no_log_prefix,
         verbose=verbose,
+        progress_json=progress_json,
+        managed_runtime=managed_runtime,
     )
 
     try:
@@ -1741,22 +2684,75 @@ def configure(
 @app.command(name="bootstrap-admin")
 def bootstrap_admin(
     db_url: Optional[str] = typer.Option(
-        None, "--db-url", help="Override DATABASE_URL."
+        None,
+        "--db-url",
+        help="Override DATABASE_URL.",
     ),
-    verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="Enable debug logging.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit a machine-readable bootstrap result.",
+    ),
+    credential_file: Optional[Path] = typer.Option(
+        None,
+        "--credential-file",
+        help=(
+            "Atomically write the canonical Project David admin credential "
+            "to this file and omit the plaintext credential from output."
+        ),
+    ),
 ) -> None:
-    """Provision the default admin user inside the running api container."""
+    """
+    Provision the default admin user inside the running API container.
+
+    When --credential-file is supplied, the canonical admin credential is
+    written directly to that file and is removed from the command result.
+    This is the preferred contract for Q and other local orchestrators.
+    """
     args = SimpleNamespace(
-        verbose=verbose, training=False, ollama=False, vllm=False, gpu=False
+        verbose=verbose,
+        training=False,
+        ollama=False,
+        vllm=False,
+        gpu=False,
     )
-    o = Orchestrator(args)
-    admin_key = o._provision_admin_api_key()
-    o.exec_bootstrap_admin(db_url=db_url)
+
+    orchestrator = Orchestrator(args)
+
+    result = orchestrator.exec_bootstrap_admin(
+        db_url=db_url,
+    )
+
+    if credential_file is not None:
+        result = handoff_admin_credential(
+            result,
+            credential_file,
+        )
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                result,
+                separators=(",", ":"),
+            )
+        )
+        return
 
     typer.echo("\n" + "=" * 60)
     typer.echo("  Bootstrap complete.")
-    typer.echo(f"  ADMIN_API_KEY : {admin_key}")
-    typer.echo("  Store this key securely — it will not be shown again.")
+    typer.echo(f"  Admin user : {result.get('user_id') or 'existing'}")
+    typer.echo(f"  Key prefix : {result.get('key_prefix') or 'unknown'}")
+    typer.echo(f"  Key created: " f"{'yes' if result.get('key_created') else 'no'}")
+
+    if credential_file is not None:
+        typer.echo(f"  Credential handoff: " f"{result.get('credential_file')}")
+
+    typer.echo("  ADMIN_API_KEY is stored in the platform .env.")
     typer.echo("=" * 60 + "\n")
 
 
@@ -1777,35 +2773,127 @@ def cache_inspect(
     disk_usage: bool = typer.Option(
         False, "--disk-usage", "-u", help="Show disk usage per cached model."
     ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output for cache listing.",
+    ),
     verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
 ) -> None:
     """
-    Manage the HuggingFace model cache inside the inference worker container.
+    Manage the HuggingFace model cache used by the inference worker.
 
     Examples:\n
       pdavid cache --list\n
+      pdavid cache --list --json\n
       pdavid cache --download Qwen/Qwen2.5-VL-7B-Instruct-AWQ\n
       pdavid cache --delete Qwen/Qwen2.5-VL-3B-Instruct-AWQ\n
       pdavid cache --disk-usage\n
       pdavid cache --list --node inference_worker_2\n
     """
     args = SimpleNamespace(
-        verbose=verbose, training=False, ollama=False, vllm=False, gpu=False
+        verbose=verbose,
+        training=False,
+        ollama=False,
+        vllm=False,
+        gpu=False,
     )
     o = Orchestrator(args)
 
     if not any([list_cache, download, delete, disk_usage]):
         list_cache = True
 
+    if json_output and not list_cache:
+        typer.echo(
+            json.dumps(
+                {
+                    "status": "error",
+                    "error": "--json currently supports cache listing only",
+                }
+            )
+        )
+        raise SystemExit(2)
+
+    def _parse_cache_directory_name(cache_name: str) -> Optional[str]:
+        if not cache_name.startswith("models--"):
+            return None
+
+        encoded_model_id = cache_name[len("models--") :]
+        namespace, separator, model_name = encoded_model_id.partition("--")
+
+        if not separator or not namespace or not model_name:
+            return None
+
+        return f"{namespace}/{model_name}"
+
+    def _list_host_cached_models() -> list[dict]:
+        hf_cache_path = os.environ.get("HF_CACHE_PATH", "").strip()
+
+        if not hf_cache_path:
+            hf_cache_path = os.path.join(
+                os.path.expanduser("~"),
+                ".cache",
+                "huggingface",
+            )
+
+        hub_path = Path(hf_cache_path).expanduser().resolve() / "hub"
+
+        if not hub_path.exists() or not hub_path.is_dir():
+            return []
+
+        models: list[dict] = []
+
+        for entry in hub_path.iterdir():
+            if not entry.is_dir():
+                continue
+
+            hf_model_id = _parse_cache_directory_name(entry.name)
+
+            if hf_model_id is None:
+                continue
+
+            models.append(
+                {
+                    "hf_model_id": hf_model_id,
+                }
+            )
+
+        models.sort(key=lambda item: item["hf_model_id"].lower())
+        return models
+
+    # Machine-readable discovery is deliberately host-side.
+    # The HF cache is mounted into inference_worker, so the worker does not
+    # need to be running merely to discover locally available model weights.
+    if list_cache and json_output:
+        models = _list_host_cached_models()
+
+        typer.echo(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "node": node,
+                    "count": len(models),
+                    "models": models,
+                }
+            )
+        )
+
+        return
+
+    # Human-facing inspection and mutating cache operations still execute
+    # inside the inference worker.
     if not o._is_container_running(node):
         typer.echo(
             f"\n  [error] Container '{node}' is not running.\n"
-            f"  Start the training stack first:\n    pdavid --mode up --training\n",
+            f"  Start the inference stack first:\n"
+            f"    pdavid --mode up --vllm\n"
+            f"  or the full training stack:\n"
+            f"    pdavid --mode up --training\n",
             err=True,
         )
         raise SystemExit(1)
 
-    def _exec(cmd: list) -> None:
+    def _exec(cmd: list) -> str:
         try:
             result = subprocess.run(  # nosec B602 B603 B607
                 ["docker", "exec", node] + cmd,
@@ -1814,52 +2902,79 @@ def cache_inspect(
                 capture_output=True,
                 shell=o.is_windows,
             )
-            typer.echo(result.stdout)
-            if result.stderr:
-                typer.echo(result.stderr, err=True)
+
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
+
+            if stdout:
+                typer.echo(stdout)
+
+            if stderr:
+                typer.echo(stderr, err=True)
+
+            return stdout
+
         except subprocess.CalledProcessError as e:
-            typer.echo(f"\n  [error] Command failed (code {e.returncode}).\n", err=True)
+            typer.echo(
+                f"\n  [error] Command failed (code {e.returncode}).\n",
+                err=True,
+            )
+
             if e.stdout:
                 typer.echo(e.stdout)
+
             if e.stderr:
                 typer.echo(e.stderr, err=True)
+
             raise SystemExit(1)
 
     if list_cache:
         typer.echo(f"\n  HuggingFace cache — {node}")
         typer.echo("=" * 60)
-        _exec(["huggingface-cli", "scan-cache"])
+        _exec(["hf", "cache", "ls"])
 
     if disk_usage:
         typer.echo(f"\n  Disk usage per model — {node}")
         typer.echo("=" * 60)
         _exec(["du", "-sh", "/root/.cache/huggingface/hub/"])
+
         typer.echo("\n  Per model:")
         _exec(
             [
                 "bash",
                 "-c",
-                "du -sh /root/.cache/huggingface/hub/models--* 2>/dev/null || echo '  (no models cached)'",
+                (
+                    "du -sh /root/.cache/huggingface/hub/models--* "
+                    "2>/dev/null || echo '  (no models cached)'"
+                ),
             ]
         )
 
     if download:
         typer.echo(f"\n  Downloading: {download}")
         typer.echo("=" * 60)
-        _exec(["huggingface-cli", "download", download])
+        _exec(["hf", "download", download])
         typer.echo(f"\n  Done. Run 'pdavid cache --list --node {node}' to verify.")
 
     if delete:
         cache_name = "models--" + delete.replace("/", "--")
         cache_path = f"/root/.cache/huggingface/hub/{cache_name}"
+
         typer.echo(f"\n  Deleting: {delete}")
         typer.echo(f"  Path    : {cache_path}")
         typer.echo("=" * 60)
-        confirmed = typer.confirm(f"  Remove {cache_name} from {node}?", default=False)
+
+        confirmed = typer.confirm(
+            f"  Remove {cache_name} from {node}?",
+            default=False,
+        )
+
         if not confirmed:
             typer.echo("  Aborted.")
             raise SystemExit(0)
+
         _exec(["rm", "-rf", cache_path])
+
         typer.echo(f"  Deleted. Run 'pdavid cache --list --node {node}' to verify.")
 
 
@@ -1980,10 +3095,15 @@ def ray_manage(
         help="Show GPU memory usage via nvidia-smi inside the inference worker.",
     ),
     dashboard: bool = typer.Option(
-        False, "--dashboard", help="Print the Ray dashboard URL."
+        False,
+        "--dashboard",
+        help="Print the Ray dashboard URL.",
     ),
     kill: Optional[str] = typer.Option(
-        None, "--kill", "-k", help="Tear down a specific Ray Serve deployment by name."
+        None,
+        "--kill",
+        "-k",
+        help="Tear down a specific Ray Serve deployment by name.",
     ),
     kill_all: bool = typer.Option(
         False,
@@ -1995,7 +3115,16 @@ def ray_manage(
         "--node",
         help="Container name to target. Defaults to inference_worker.",
     ),
-    verbose: bool = typer.Option(False, "--verbose", help="Enable debug logging."),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON. Supported with --deployments.",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="Enable debug logging.",
+    ),
 ) -> None:
     """
     Inspect and manage the Ray cluster and Ray Serve deployments.
@@ -2003,29 +3132,78 @@ def ray_manage(
     Examples:\n
       pdavid ray --status\n
       pdavid ray --deployments\n
+      pdavid ray --deployments --json\n
       pdavid ray --gpu\n
       pdavid ray --dashboard\n
       pdavid ray --kill vllm_dep_WwY4uagFG1wDImm93xQ7qf\n
       pdavid ray --kill-all\n
       pdavid ray --status --node inference_worker_2\n
     """
+
+    if json_output and not deployments:
+        typer.echo(
+            json.dumps(
+                {
+                    "status": "error",
+                    "error": (
+                        "--json is currently supported only " "with --deployments"
+                    ),
+                }
+            )
+        )
+        raise SystemExit(2)
+
     args = SimpleNamespace(
-        verbose=verbose, training=False, ollama=False, vllm=False, gpu=False
+        verbose=verbose,
+        training=False,
+        ollama=False,
+        vllm=False,
+        gpu=False,
     )
+
     o = Orchestrator(args)
 
-    if not any([status, deployments, gpu, dashboard, kill, kill_all]):
+    if not any(
+        [
+            status,
+            deployments,
+            gpu,
+            dashboard,
+            kill,
+            kill_all,
+        ]
+    ):
         status = True
 
     if not o._is_container_running(node):
-        typer.echo(
-            f"\n  [error] Container '{node}' is not running.\n"
-            f"  Start the training stack first:\n    pdavid --mode up --training\n",
-            err=True,
-        )
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {
+                        "status": "error",
+                        "error": "container_not_running",
+                        "node": node,
+                        "applications": [],
+                    }
+                )
+            )
+        else:
+            typer.echo(
+                f"\n  [error] Container '{node}' is not running.\n"
+                f"  Start the inference stack first:\n"
+                f"    pdavid --mode up --vllm\n"
+                f"  or the full training stack:\n"
+                f"    pdavid --mode up --training\n",
+                err=True,
+            )
+
         raise SystemExit(1)
 
-    def _exec(cmd: list, check: bool = True) -> Optional[str]:
+    def _exec(
+        cmd: list,
+        check: bool = True,
+        echo_stdout: bool = True,
+    ) -> Optional[str]:
         try:
             result = subprocess.run(  # nosec B602 B603 B607
                 ["docker", "exec", node] + cmd,
@@ -2034,32 +3212,73 @@ def ray_manage(
                 capture_output=True,
                 shell=o.is_windows,
             )
-            if result.stdout:
-                typer.echo(result.stdout)
+
+            if result.stdout and echo_stdout:
+                typer.echo(
+                    result.stdout,
+                    nl=False,
+                )
+
             if result.stderr:
-                typer.echo(result.stderr, err=True)
+                typer.echo(
+                    result.stderr,
+                    err=True,
+                    nl=False,
+                )
+
             return result.stdout
+
         except subprocess.CalledProcessError as e:
-            typer.echo(f"\n  [error] Command failed (code {e.returncode}).\n", err=True)
-            if e.stdout:
-                typer.echo(e.stdout)
+            if json_output:
+                typer.echo(
+                    json.dumps(
+                        {
+                            "status": "error",
+                            "error": "command_failed",
+                            "returncode": e.returncode,
+                            "node": node,
+                        }
+                    )
+                )
+            else:
+                typer.echo(
+                    f"\n  [error] Command failed " f"(code {e.returncode}).\n",
+                    err=True,
+                )
+
+                if e.stdout:
+                    typer.echo(
+                        e.stdout,
+                        nl=False,
+                    )
+
             if e.stderr:
-                typer.echo(e.stderr, err=True)
+                typer.echo(
+                    e.stderr,
+                    err=True,
+                    nl=False,
+                )
+
             raise SystemExit(1)
 
     if dashboard:
         typer.echo("\n  Ray dashboard: http://localhost:80/ray/")
-        typer.echo("  Cluster nodes, GPU resources, and active Serve deployments.\n")
+        typer.echo("  Cluster nodes, GPU resources, " "and active Serve deployments.\n")
 
     if status:
         typer.echo(f"\n  Ray cluster status — {node}")
         typer.echo("=" * 60)
+
         _exec(
             [
-                "python",
+                "python3",
                 "-c",
                 (
-                    "import ray; ray.init(address='auto', ignore_reinit_error=True); "
+                    "import ray; "
+                    "ray.init("
+                    "address='auto', "
+                    "ignore_reinit_error=True"
+                    "); "
                     "print(ray.cluster_resources()); "
                     "print(ray.available_resources())"
                 ),
@@ -2067,31 +3286,108 @@ def ray_manage(
         )
 
     if deployments:
-        typer.echo(f"\n  Ray Serve deployments — {node}")
-        typer.echo("=" * 60)
-        _exec(
-            [
-                "python",
-                "-c",
-                (
-                    "from ray import serve; "
-                    "import ray; ray.init(address='auto', ignore_reinit_error=True); "
-                    "serve.start(detached=True); "
-                    "status = serve.status(); "
-                    "[print(f'  {name:<45} {app.status}') "
-                    " for name, app in status.applications.items()] "
-                    "if status.applications else print('  No active deployments.')"
-                ),
-            ]
-        )
+        if json_output:
+            raw_output = _exec(
+                [
+                    "python3",
+                    "-c",
+                    (
+                        "import json, ray; "
+                        "from ray import serve; "
+                        "ray.init(address='auto', ignore_reinit_error=True); "
+                        "s = serve.status(); "
+                        "print(json.dumps({"
+                        "'status': 'ok', "
+                        f"'node': {node!r}, "
+                        "'applications': ["
+                        "{"
+                        "'name': name, "
+                        "'deployment_id': "
+                        "name[5:] if name.startswith('vllm_dep_') else None, "
+                        "'status': str(app.status)"
+                        "} "
+                        "for name, app in s.applications.items()"
+                        "]"
+                        "}))"
+                    ),
+                ],
+                echo_stdout=False,
+            )
+
+            payload = raw_output.strip() if raw_output else ""
+
+            if not payload:
+                typer.echo(
+                    json.dumps(
+                        {
+                            "status": "error",
+                            "error": "empty_ray_response",
+                            "node": node,
+                            "applications": [],
+                        }
+                    )
+                )
+                raise SystemExit(1)
+
+            try:
+                parsed = json.loads(payload)
+            except json.JSONDecodeError:
+                typer.echo(
+                    json.dumps(
+                        {
+                            "status": "error",
+                            "error": "invalid_ray_response",
+                            "node": node,
+                            "applications": [],
+                        }
+                    )
+                )
+                raise SystemExit(1)
+
+            typer.echo(
+                json.dumps(
+                    parsed,
+                    separators=(",", ":"),
+                )
+            )
+
+        else:
+            typer.echo(f"\n  Ray Serve deployments — {node}")
+            typer.echo("=" * 60)
+
+            _exec(
+                [
+                    "python3",
+                    "-c",
+                    (
+                        "from ray import serve; "
+                        "import ray; "
+                        "ray.init(address='auto', ignore_reinit_error=True); "
+                        "serve.start(detached=True); "
+                        "status = serve.status(); "
+                        "[print(f'  {name:<45} {app.status}') "
+                        "for name, app in status.applications.items()] "
+                        "if status.applications "
+                        "else print('  No active deployments.')"
+                    ),
+                ]
+            )
 
     if gpu:
         typer.echo(f"\n  GPU memory usage — {node}")
         typer.echo("=" * 60)
+
         _exec(
             [
                 "nvidia-smi",
-                "--query-gpu=name,memory.used,memory.free,memory.total,utilization.gpu",
+                (
+                    "--query-gpu="
+                    "name,"
+                    "memory.used,"
+                    "memory.free,"
+                    "memory.total,"
+                    "utilization.gpu"
+                ),
                 "--format=csv,noheader,nounits",
             ]
         )
@@ -2099,53 +3395,83 @@ def ray_manage(
     if kill:
         typer.echo(f"\n  Killing deployment: {kill}")
         typer.echo("=" * 60)
+
         confirmed = typer.confirm(
-            f"  This will tear down '{kill}' and free its GPU memory. Proceed?",
+            f"  This will tear down '{kill}' " "and free its GPU memory. Proceed?",
             default=False,
         )
-        if not confirmed:
-            typer.echo("  Aborted.")
-            raise SystemExit(0)
-        _exec(
-            [
-                "python",
-                "-c",
-                (
-                    f"import ray; ray.init(address='auto', ignore_reinit_error=True); "
-                    f"from ray import serve; "
-                    f"serve.start(detached=True); "
-                    f"serve.delete('{kill}'); "
-                    f"print('  Deployment {kill} deleted. GPU memory released.')"
-                ),
-            ]
-        )
-        typer.echo("\n  Run 'pdavid ray --deployments' to confirm.")
 
-    if kill_all:
-        typer.echo("\n  This will tear down ALL active Ray Serve deployments.")
-        typer.echo("  All GPU memory will be released.")
-        typer.echo("=" * 60)
-        confirmed = typer.confirm("  Proceed?", default=False)
         if not confirmed:
             typer.echo("  Aborted.")
             raise SystemExit(0)
+
         _exec(
             [
-                "python",
+                "python3",
                 "-c",
                 (
-                    "import ray; ray.init(address='auto', ignore_reinit_error=True); "
+                    "import ray; "
+                    "ray.init("
+                    "address='auto', "
+                    "ignore_reinit_error=True"
+                    "); "
                     "from ray import serve; "
                     "serve.start(detached=True); "
-                    "apps = serve.status().applications; "
-                    "[serve.delete(name) for name in apps]; "
-                    "print(f'  Deleted {len(apps)} deployment(s). GPU memory released.')"
-                    " if apps else print('  No active deployments to remove.')"
+                    f"serve.delete({kill!r}); "
+                    f"print("
+                    f"'  Deployment {kill} deleted. "
+                    f"GPU memory released.'"
+                    f")"
                 ),
             ]
         )
+
+        typer.echo("\n  Run 'pdavid ray --deployments' " "to confirm.")
+
+    if kill_all:
+        typer.echo("\n  This will tear down ALL active " "Ray Serve deployments.")
+        typer.echo("  All GPU memory will be released.")
+        typer.echo("=" * 60)
+
+        confirmed = typer.confirm(
+            "  Proceed?",
+            default=False,
+        )
+
+        if not confirmed:
+            typer.echo("  Aborted.")
+            raise SystemExit(0)
+
+        _exec(
+            [
+                "python3",
+                "-c",
+                (
+                    "import ray; "
+                    "ray.init("
+                    "address='auto', "
+                    "ignore_reinit_error=True"
+                    "); "
+                    "from ray import serve; "
+                    "serve.start(detached=True); "
+                    "apps = "
+                    "serve.status().applications; "
+                    "[serve.delete(name) "
+                    "for name in apps]; "
+                    "print("
+                    "f'  Deleted {len(apps)} "
+                    "deployment(s). "
+                    "GPU memory released.'"
+                    ") if apps else print("
+                    "'  No active deployments "
+                    "to remove.'"
+                    ")"
+                ),
+            ]
+        )
+
         typer.echo(
-            "\n  Run 'pdavid db --nuke-deployments' to also clear the DB records."
+            "\n  Run " "'pdavid db --nuke-deployments' " "to also clear the DB records."
         )
 
 

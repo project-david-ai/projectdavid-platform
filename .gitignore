@@ -180,3 +180,7 @@ docker-compose.runtime.yml
 ~/.pdavid/
 private.key
 *.key
+
+# Project David runtime-local state
+.projectdavid-instance-id
+.pytest-tmp/

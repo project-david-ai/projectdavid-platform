@@ -1,14 +1,151 @@
-# [1.37.0-dev.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.37.0-dev.1...v1.37.0-dev.2) (2026-04-13)
+## [1.47.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.47.1...v1.47.2) (2026-11-13)
 
 
 ### Bug Fixes
 
-* **infra:** pin all custom images to v1.37.0 ([5c2f65a](https://github.com/project-david-ai/projectdavid-platform/commit/5c2f65a980ff0f9d43b9b18515e375d3fb1a063b))
+* **platform:** narrow env migration value types for mypy ([fae42db](https://github.com/project-david-ai/projectdavid-platform/commit/fae42db879edfab164a90052c05100d679ed931a))
+* **platform:** reconcile obsolete provider URL defaults in generated runtimes ([0200888](https://github.com/project-david-ai/projectdavid-platform/commit/020088845d8fb675d03cf477fa1d883ddba9ba37))
+
+## [1.47.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.47.0...v1.47.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **packaging:** release updated core image references ([bcef8ac](https://github.com/project-david-ai/projectdavid-platform/commit/bcef8acf07094f31a7197ab5d5fdbfea5df65099))
+
+# [1.47.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.46.0...v1.47.0) (2026-09-09)
+
+
+### Bug Fixes
+
+* disable vLLM V2 runner by default ([527edca](https://github.com/project-david-ai/projectdavid-platform/commit/527edca00a2523e4d6ca533d615a5f4d140d6c20))
+* emit startup progress before preflight ([1bc9710](https://github.com/project-david-ai/projectdavid-platform/commit/1bc9710978eea16ac3b3998956ceb9ccc47d600a))
+* satisfy platform static typing checks ([67d60be](https://github.com/project-david-ai/projectdavid-platform/commit/67d60be9b850270a7bdef4a7e4bb8e1f8528fe97))
+* synchronize packaged managed runtime composition ([0a928b9](https://github.com/project-david-ai/projectdavid-platform/commit/0a928b9be3fa1c92671bcf380cfe002969bdeecc))
+* use current Hugging Face CLI commands ([7bbaa4f](https://github.com/project-david-ai/projectdavid-platform/commit/7bbaa4f46a3c7ddd1a3340c4b849e83369f901cf))
 
 
 ### Features
 
-* **infra:** route Ray dashboard via nginx, remove unnecessary host port mappings ([29d4650](https://github.com/project-david-ai/projectdavid-platform/commit/29d46509b12a6923eef61cfc7f9e4645da17def9))
+* add machine-readable Ray deployment status ([e7699ba](https://github.com/project-david-ai/projectdavid-platform/commit/e7699ba686d1a3e3de871666c825fbc245d81d7a))
+* expose runtime startup progress ([d1d72f0](https://github.com/project-david-ai/projectdavid-platform/commit/d1d72f04fe55f11731eb7cdb31828ef686252a47))
+* improve machine-readable local runtime discovery ([613971a](https://github.com/project-david-ai/projectdavid-platform/commit/613971abf682f407c84f4b0367e154588be0661c))
+* mount verified model hub runtimes read-only ([cda642d](https://github.com/project-david-ai/projectdavid-platform/commit/cda642d3230d9665952798f4dd314b5e8f93daf2))
+* support Q managed runtime and startup telemetry ([83ce105](https://github.com/project-david-ai/projectdavid-platform/commit/83ce1053e8342918b548f888433ec59a3da9add0))
+
+# [1.46.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.45.0...v1.46.0) (2026-08-25)
+
+
+### Features
+
+* add stable Project David runtime instance identity ([7f20cf4](https://github.com/project-david-ai/projectdavid-platform/commit/7f20cf409b56a0d461188f491e9a270c446d12e4))
+
+# [1.45.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.44.3...v1.45.0) (2026-08-23)
+
+
+### Bug Fixes
+
+* avoid leaking runtime directory across CLI invocations ([7764097](https://github.com/project-david-ai/projectdavid-platform/commit/7764097d449e58a99b29898e5c13aa61a822fe88))
+
+
+### Features
+
+* add secure runtime bootstrap handoff ([56643a6](https://github.com/project-david-ai/projectdavid-platform/commit/56643a6711367a981c0e310e22011b62f6357ebb))
+
+## [1.44.3](https://github.com/project-david-ai/projectdavid-platform/compare/v1.44.2...v1.44.3) (2026-08-22)
+
+
+### Bug Fixes
+
+* require license crypto at runtime ([e0059fd](https://github.com/project-david-ai/projectdavid-platform/commit/e0059fdf4dbfb5110b8ebd9508bb9e53467ae9d1))
+
+## [1.44.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.44.1...v1.44.2) (2026-08-22)
+
+
+### Bug Fixes
+
+* include deployment API in vLLM profile ([b687823](https://github.com/project-david-ai/projectdavid-platform/commit/b6878236e3d53ef3c492c49fd8b2c0e070f09395))
+
+## [1.44.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.44.0...v1.44.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* finalise vLLM platform integration and Ray CLI management ([eaa6ce7](https://github.com/project-david-ai/projectdavid-platform/commit/eaa6ce7558c621dfa36f2b694e22a18619def7e3))
+
+# [1.44.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.43.1...v1.44.0) (2026-08-22)
+
+
+### Bug Fixes
+
+* Modify container version numbers back to 1.43.0 ([f731c60](https://github.com/project-david-ai/projectdavid-platform/commit/f731c609e04ed5906e1c8de5ca3b2a30641c6a11))
+
+
+### Features
+
+* restore vLLM as first-class inference mode ([dc3144b](https://github.com/project-david-ai/projectdavid-platform/commit/dc3144bca4f014d99660c2285a4370e35e6329b9))
+
+## [1.43.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.43.0...v1.43.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* consume runtime-generated admin bootstrap credentials ([055a5ee](https://github.com/project-david-ai/projectdavid-platform/commit/055a5ee78a6e824e29aa441d4f26c04954f6bf80))
+
+# [1.43.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.42.0...v1.43.0) (2026-04-24)
+
+
+### Features
+
+* **deps:** cut over to projectdavid-core v1.42.x ([bca42d6](https://github.com/project-david-ai/projectdavid-platform/commit/bca42d6baaab299aacb30d0a9963abbe95eb860f))
+
+# [1.42.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.41.0...v1.42.0) (2026-04-19)
+
+
+### Features
+
+* trigger release build ([17620d7](https://github.com/project-david-ai/projectdavid-platform/commit/17620d7bad833c32563ea3136c8c7f477b87f8c1))
+
+# [1.41.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.40.0...v1.41.0) (2026-04-19)
+
+
+### Features
+
+* **deps:** pin core images to :1.39 and wire HF cache for training-api ([ed9e1f2](https://github.com/project-david-ai/projectdavid-platform/commit/ed9e1f24fdf8979f82c607cfb39292eb1cab3c89))
+
+# [1.40.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.39.0...v1.40.0) (2026-04-17)
+
+
+### Features
+
+* **orchestrator:** always pull from registry, remove build mode, audit on up only ([b17d381](https://github.com/project-david-ai/projectdavid-platform/commit/b17d3817c8d74e9719cbe473f7df898106075813))
+
+# [1.39.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.38.0...v1.39.0) (2026-04-15)
+
+
+### Bug Fixes
+
+* **security:** suppress B105 false positive on HF_TOKEN empty default ([0d29424](https://github.com/project-david-ai/projectdavid-platform/commit/0d29424be7f76245b502bbf12b60082716c22a8e))
+
+
+### Features
+
+* **orchestrator:** add compose-file audit with backup and auto-replace ([d08ccfa](https://github.com/project-david-ai/projectdavid-platform/commit/d08ccfa390c5c6de757847bf4dccfd2a7a481bdb))
+* **telemetry:** add opt-in anonymous usage analytics via PostHog ([0174308](https://github.com/project-david-ai/projectdavid-platform/commit/0174308c4c65e7e5e81e337294f03b07daaeccd9))
+* **telemetry:** add opt-in anonymous usage analytics via PostHog ([aa0f8b9](https://github.com/project-david-ai/projectdavid-platform/commit/aa0f8b9ec676c11e773be09d6c5e87b483b729a0))
+* **telemetry:** migrate existing installs to telemetry on first 1.38 run ([8205404](https://github.com/project-david-ai/projectdavid-platform/commit/82054046ca7fe3b528a4ab7f8fe0d0d9bd7865ab))
+
+# [1.38.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.37.0...v1.38.0) (2026-04-13)
+
+
+### Bug Fixes
+
+* **infra:** pin all custom images to v1.37.0 ([f388e66](https://github.com/project-david-ai/projectdavid-platform/commit/f388e66b11453a0acbebfff89c73bb7a31974210))
+
+
+### Features
+
+* **infra:** route Ray dashboard via nginx, remove unnecessary host port mappings ([efff402](https://github.com/project-david-ai/projectdavid-platform/commit/efff402e6077499718cc06d6b629717d75636f20))
 
 # [1.37.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.36.2...v1.37.0) (2026-04-12)
 
