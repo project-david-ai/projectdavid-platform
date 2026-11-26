@@ -1,3 +1,10 @@
+## [1.48.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.48.0...v1.48.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **platform:** enable web favicons and correct search engine defaults ([7fcd3ca](https://github.com/project-david-ai/projectdavid-platform/commit/7fcd3ca58cd67d1d73b8d91152e43d976c408349))
+
 # [1.48.0](https://github.com/project-david-ai/projectdavid-platform/compare/v1.47.2...v1.48.0) (2026-11-22)
 
 
