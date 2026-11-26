@@ -154,6 +154,7 @@ services:
       - BROWSER_WS_ENDPOINT=ws://browser:3000
       - DEFAULT_SECRET_KEY=${DEFAULT_SECRET_KEY}
       - SEARXNG_URL=http://searxng:8080
+      - WEB_FAVICONS_ENABLED=${WEB_FAVICONS_ENABLED-true}
       - OTEL_SERVICE_NAME=api-api
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_EXPORTER_OTLP_PROTOCOL=grpc

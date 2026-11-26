@@ -394,6 +394,7 @@ class Orchestrator:
         "SHELL_SERVER_EXTERNAL_URL": "ws://localhost:8000/ws/computer",
         "CODE_EXECUTION_URL": "ws://sandbox:8000/ws/execute",
         "DISABLE_FIREJAIL": "true",
+        "WEB_FAVICONS_ENABLED": "true",
         "SHARED_PATH": "./shared_data",
         "AUTO_MIGRATE": "1",
         "MYSQL_HOST": DEFAULT_DB_SERVICE_NAME,
@@ -468,6 +469,7 @@ class Orchestrator:
             "DISABLE_FIREJAIL",
             "SHARED_PATH",
             "AUTO_MIGRATE",
+            "WEB_FAVICONS_ENABLED",
         ],
         "Admin Configuration": [
             "ADMIN_USER_EMAIL",
