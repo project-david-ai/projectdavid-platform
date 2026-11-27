@@ -1,3 +1,10 @@
+## [1.48.2](https://github.com/project-david-ai/projectdavid-platform/compare/v1.48.1...v1.48.2) (2026-11-27)
+
+
+### Bug Fixes
+
+* **platform:** distribute core 1.66 production images ([cf6f711](https://github.com/project-david-ai/projectdavid-platform/commit/cf6f7118765502d7d016db0c337f24e56a0e928a))
+
 ## [1.48.1](https://github.com/project-david-ai/projectdavid-platform/compare/v1.48.0...v1.48.1) (2026-11-26)
 
 
